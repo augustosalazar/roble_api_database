@@ -5,15 +5,8 @@ import 'dart:io';
 import 'package:http/http.dart' as http;
 
 import 'roble_api_config.dart';
-
-/// Excepción genérica para errores en el cliente Roble API.
-class RobleApiException implements Exception {
-  final String message;
-  RobleApiException(this.message);
-
-  @override
-  String toString() => 'RobleApiException: $message';
-}
+import 'roble_api_exception.dart';
+import 'roble_models.dart';
 
 /// Cliente HTTP robusto para interactuar con la API Roble.
 ///
@@ -27,22 +20,41 @@ class RobleApiDataBase {
   String? _accessToken;
   String? _refreshToken;
 
-  void setTokens({required String accessToken, required String refreshToken}) {
-    _accessToken = accessToken;
-    _refreshToken = refreshToken;
-  }
-
-  void clearTokens() {
-    _accessToken = null;
-    _refreshToken = null;
-  }
-
-  static const Duration timeoutDuration = Duration(seconds: 30);
+  /// Callback opcional invocado cada vez que cambia el access token:
+  /// login, refresco automático o logout. Útil para persistir la sesión.
+  void Function(String? token)? onTokenUpdate;
 
   RobleApiDataBase({
     required this.config,
     http.Client? client,
   }) : client = client ?? http.Client();
+
+  // ============================================================
+  // ============= TOKENS =======================================
+  // ============================================================
+
+  /// Access token actual, o `null` si no hay sesión activa.
+  String? get accessToken => _accessToken;
+
+  /// Refresh token actual, o `null` si no hay sesión activa.
+  String? get refreshToken => _refreshToken;
+
+  /// Restaura una sesión previamente persistida.
+  void setTokens({required String accessToken, required String refreshToken}) {
+    _refreshToken = refreshToken;
+    _updateAccessToken(accessToken);
+  }
+
+  /// Descarta la sesión en memoria.
+  void clearTokens() {
+    _refreshToken = null;
+    _updateAccessToken(null);
+  }
+
+  void _updateAccessToken(String? token) {
+    _accessToken = token;
+    onTokenUpdate?.call(token);
+  }
 
   // ============================================================
   // ============= MÉTODOS INTERNOS =============================
@@ -54,15 +66,11 @@ class RobleApiDataBase {
         .replace(queryParameters: queryParams);
   }
 
-  Map<String, String> _mergeHeaders(
-      Map<String, String>? base, Map<String, String>? extra) {
+  Map<String, String> _buildHeaders({bool skipAuth = false}) {
     final headers = <String, String>{'Content-Type': 'application/json'};
 
-    if (base != null) headers.addAll(base);
-    if (extra != null) headers.addAll(extra);
-
     // ✅ Si hay token, lo agrega automáticamente como header
-    if (_accessToken != null && _accessToken!.isNotEmpty) {
+    if (!skipAuth && _accessToken != null && _accessToken!.isNotEmpty) {
       headers['Authorization'] = 'Bearer $_accessToken';
     }
 
@@ -70,34 +78,34 @@ class RobleApiDataBase {
   }
 
   /// Ejecuta una solicitud HTTP genérica.
+  ///
+  /// [skipAuth] omite el header `Authorization`, necesario para endpoints
+  /// públicos como `/public-read`.
   Future<dynamic> _makeRequest(
     String method,
     String endpoint, {
     Map<String, dynamic>? body,
     Map<String, String>? queryParams,
     bool isAuthRequest = false,
-    Map<String, String>? extraHeaders,
+    bool skipAuth = false,
   }) async {
     final baseUrl = isAuthRequest ? config.authUrl : config.dataUrl;
     final uri = _buildUri(baseUrl, endpoint, queryParams);
-    final headers = _mergeHeaders(
-      isAuthRequest ? config.authHeaders : config.dataHeaders,
-      extraHeaders,
-    );
+    final headers = _buildHeaders(skipAuth: skipAuth);
 
     try {
       http.Response response;
       switch (method.toUpperCase()) {
         case 'GET':
           response =
-              await client.get(uri, headers: headers).timeout(timeoutDuration);
+              await client.get(uri, headers: headers).timeout(config.timeout);
           break;
         case 'POST':
           response = await client
               .post(uri,
                   headers: headers,
                   body: body != null ? jsonEncode(body) : null)
-              .timeout(timeoutDuration);
+              .timeout(config.timeout);
           break;
         case 'PUT':
         case 'PATCH':
@@ -105,14 +113,14 @@ class RobleApiDataBase {
               .put(uri,
                   headers: headers,
                   body: body != null ? jsonEncode(body) : null)
-              .timeout(timeoutDuration);
+              .timeout(config.timeout);
           break;
         case 'DELETE':
           response = await client
               .delete(uri,
                   headers: headers,
                   body: body != null ? jsonEncode(body) : null)
-              .timeout(timeoutDuration);
+              .timeout(config.timeout);
           break;
         default:
           throw RobleApiException('HTTP method $method no soportado');
@@ -131,42 +139,50 @@ class RobleApiDataBase {
       // Manejo de errores HTTP
       if (response.statusCode == 401 &&
           _refreshToken != null &&
-          !isAuthRequest) {
+          !isAuthRequest &&
+          !skipAuth) {
         // 🔁 Intentamos refrescar el token automáticamente
         try {
-          await refreshAccessToken();
-          // Reintentamos la misma solicitud una sola vez
-          return await _makeRequest(
-            method,
-            endpoint,
-            body: body,
-            queryParams: queryParams,
-            isAuthRequest: isAuthRequest,
-            extraHeaders: extraHeaders,
-          );
+          await _refreshAccessToken();
         } catch (e) {
-          throw RobleApiException('Token expirado y no se pudo refrescar: $e');
+          throw RobleApiAuthException(
+              'Token expirado y no se pudo refrescar: $e');
         }
+        // Reintentamos la misma solicitud una sola vez
+        return await _makeRequest(
+          method,
+          endpoint,
+          body: body,
+          queryParams: queryParams,
+          isAuthRequest: isAuthRequest,
+          skipAuth: skipAuth,
+        );
       }
 
-      String msg = 'HTTP ${response.statusCode}';
-      try {
-        final decoded = jsonDecode(response.body);
-        if (decoded is Map && decoded.containsKey('message')) {
-          msg += ': ${decoded['message']}';
-        } else {
-          msg += ': ${response.body}';
+      String msg;
+      if (response.body.isEmpty) {
+        msg = 'El servidor respondió sin cuerpo';
+      } else {
+        try {
+          final decoded = jsonDecode(response.body);
+          final detail = (decoded is Map)
+              ? (decoded['message'] ?? decoded['error'])
+              : null;
+          msg = detail != null ? '$detail' : response.body;
+        } catch (_) {
+          msg = response.body;
         }
-      } catch (_) {
-        msg += ': ${response.body}';
       }
-      throw RobleApiException(msg);
+      throw RobleApiHttpException(response.statusCode, msg);
+    } on RobleApiException {
+      // Ya es una excepción del paquete: la propagamos sin envolverla.
+      rethrow;
     } on SocketException {
-      throw RobleApiException('Sin conexión a internet');
+      throw const RobleApiNetworkException('Sin conexión a internet');
     } on TimeoutException {
-      throw RobleApiException('Tiempo de espera agotado');
+      throw const RobleApiTimeoutException('Tiempo de espera agotado');
     } on FormatException {
-      throw RobleApiException('Respuesta con formato inválido');
+      throw const RobleApiFormatException('Respuesta con formato inválido');
     } catch (e) {
       throw RobleApiException('Error inesperado: $e');
     }
@@ -176,6 +192,82 @@ class RobleApiDataBase {
   // ============= MÉTODOS DE AUTENTICACIÓN =====================
   // ============================================================
 
+  /// Registra un usuario sin verificación por correo.
+  ///
+  /// [extra] son campos adicionales opcionales que el backend guarda junto al
+  /// usuario; se envían tal cual en el campo `extra` del cuerpo.
+  Future<Map<String, dynamic>> register({
+    required String email,
+    required String password,
+    required String name,
+    Map<String, dynamic>? extra,
+  }) async {
+    final res = await _makeRequest(
+      'POST',
+      'signup-direct',
+      body: {
+        'email': email,
+        'password': password,
+        'name': name,
+        if (extra != null) 'extra': extra,
+      },
+      isAuthRequest: true,
+    );
+    return (res is Map) ? Map<String, dynamic>.from(res) : {};
+  }
+
+  /// Registra un usuario y envía un código de verificación por correo.
+  ///
+  /// El registro no queda activo hasta llamar a [verifyEmail] con el código.
+  ///
+  /// [extra] son campos adicionales opcionales que el backend guarda junto al
+  /// usuario; se envían tal cual en el campo `extra` del cuerpo.
+  Future<Map<String, dynamic>> registerWithVerification({
+    required String email,
+    required String password,
+    required String name,
+    Map<String, dynamic>? extra,
+  }) async {
+    final res = await _makeRequest(
+      'POST',
+      'signup',
+      body: {
+        'email': email,
+        'password': password,
+        'name': name,
+        if (extra != null) 'extra': extra,
+      },
+      isAuthRequest: true,
+    );
+    return (res is Map) ? Map<String, dynamic>.from(res) : {};
+  }
+
+  /// Confirma el correo con el código de 6 dígitos recibido.
+  Future<Map<String, dynamic>> verifyEmail({
+    required String email,
+    required String code,
+  }) async {
+    final res = await _makeRequest(
+      'POST',
+      'verify-email',
+      body: {'email': email, 'code': code},
+      isAuthRequest: true,
+    );
+    return (res is Map) ? Map<String, dynamic>.from(res) : {};
+  }
+
+  /// Reenvía el código de verificación.
+  Future<Map<String, dynamic>> resendCode({required String email}) async {
+    final res = await _makeRequest(
+      'POST',
+      'resend-code',
+      body: {'email': email},
+      isAuthRequest: true,
+    );
+    return (res is Map) ? Map<String, dynamic>.from(res) : {};
+  }
+
+  /// Inicia sesión y almacena los tokens internamente.
   Future<Map<String, dynamic>> login({
     required String email,
     required String password,
@@ -188,16 +280,84 @@ class RobleApiDataBase {
     );
 
     if (res is Map) {
-      _accessToken = res['accessToken'];
-      _refreshToken = res['refreshToken'];
+      _refreshToken = res['refreshToken'] as String?;
+      _updateAccessToken(res['accessToken'] as String?);
     }
 
     return (res is Map) ? Map<String, dynamic>.from(res) : {};
   }
 
-  Future<void> refreshAccessToken() async {
+  /// Cierra la sesión en el servidor y descarta los tokens locales.
+  Future<void> logout() async {
+    if (_accessToken == null || _accessToken!.isEmpty) {
+      throw const RobleApiAuthException(
+          'No hay token activo para cerrar sesión.');
+    }
+
+    await _makeRequest('POST', 'logout', isAuthRequest: true);
+    clearTokens();
+  }
+
+  /// Devuelve los datos del usuario autenticado (`sub`, `email`, `dbName`,
+  /// `sessionId`). Es el único endpoint que expone la identidad del usuario.
+  ///
+  /// Lanza [RobleApiHttpException] con `401` si el token no es válido.
+  Future<Map<String, dynamic>> currentUser() async {
+    final res = await _makeRequest('GET', 'verify-token', isAuthRequest: true);
+
+    if (res is Map && res['user'] is Map) {
+      return Map<String, dynamic>.from(res['user'] as Map);
+    }
+    throw const RobleApiFormatException(
+        'Respuesta inesperada al verificar el token.');
+  }
+
+  /// Envía un correo con el enlace de restablecimiento de contraseña.
+  Future<Map<String, dynamic>> forgotPassword({required String email}) async {
+    final res = await _makeRequest(
+      'POST',
+      'forgot-password',
+      body: {'email': email},
+      isAuthRequest: true,
+    );
+    return (res is Map) ? Map<String, dynamic>.from(res) : {};
+  }
+
+  /// Restablece la contraseña con el token recibido por correo.
+  Future<Map<String, dynamic>> resetPassword({
+    required String token,
+    required String newPassword,
+  }) async {
+    final res = await _makeRequest(
+      'POST',
+      'reset-password',
+      body: {'token': token, 'newPassword': newPassword},
+      isAuthRequest: true,
+    );
+    return (res is Map) ? Map<String, dynamic>.from(res) : {};
+  }
+
+  /// Elimina permanentemente la cuenta autenticada y limpia la sesión local.
+  ///
+  /// La operación no se puede deshacer: pide confirmación al usuario antes
+  /// de llamarla.
+  Future<void> deleteAccount() async {
+    if (_accessToken == null || _accessToken!.isEmpty) {
+      throw const RobleApiAuthException(
+          'No hay sesión activa para eliminar la cuenta.');
+    }
+
+    await _makeRequest('DELETE', 'account', isAuthRequest: true);
+    clearTokens();
+  }
+
+  /// Refresca el access token con el refresh token almacenado.
+  ///
+  /// Es interno a propósito: se invoca automáticamente cuando una petición
+  /// de datos responde `401`. No forma parte de la API pública.
+  Future<void> _refreshAccessToken() async {
     if (_refreshToken == null) {
-      throw RobleApiException('No hay refresh token disponible.');
+      throw const RobleApiAuthException('No hay refresh token disponible.');
     }
 
     final res = await _makeRequest(
@@ -208,45 +368,11 @@ class RobleApiDataBase {
     );
 
     if (res is Map && res.containsKey('accessToken')) {
-      _accessToken = res['accessToken'];
+      _updateAccessToken(res['accessToken'] as String?);
     } else {
-      throw RobleApiException('Respuesta inválida al refrescar el token.');
+      throw const RobleApiAuthException(
+          'Respuesta inválida al refrescar el token.');
     }
-  }
-
-  Future<Map<String, dynamic>> register({
-    required String email,
-    required String password,
-    required String name,
-  }) async {
-    final res = await _makeRequest(
-      'POST',
-      'signup-direct',
-      body: {'email': email, 'password': password, 'name': name},
-      isAuthRequest: true,
-    );
-    return (res is Map) ? Map<String, dynamic>.from(res) : {};
-  }
-
-  Future<Map<String, dynamic>> refreshToken({
-    required String refreshToken,
-  }) async {
-    final res = await _makeRequest(
-      'POST',
-      'refresh-token',
-      body: {'refreshToken': refreshToken},
-      isAuthRequest: true,
-    );
-    return (res is Map) ? Map<String, dynamic>.from(res) : {};
-  }
-
-  Future<void> logout({required String accessToken}) async {
-    await _makeRequest(
-      'POST',
-      'logout',
-      isAuthRequest: true,
-      extraHeaders: {'Authorization': 'Bearer $accessToken'},
-    );
   }
 
   // ============================================================
@@ -274,26 +400,65 @@ class RobleApiDataBase {
     );
   }
 
-  /// Inserta un registro y devuelve el registro insertado.
-  Future<Map<String, dynamic>> create(
-      String tableName, Map<String, dynamic> data) async {
-    final response = await _makeRequest(
+  /// Clona la estructura de columnas de una tabla existente.
+  ///
+  /// Es el único mecanismo de creación de tablas documentado por la API, y
+  /// requiere que [templateTableName] ya exista. No copia los datos.
+  Future<Map<String, dynamic>> createTableFromTemplate({
+    required String tableName,
+    required String templateTableName,
+  }) async {
+    final res = await _makeRequest(
       'POST',
-      'insert',
+      'create-table-from-template',
       body: {
         'tableName': tableName,
-        'records': [data]
+        'templateTableName': templateTableName,
       },
     );
+    return (res is Map) ? Map<String, dynamic>.from(res) : {};
+  }
 
-    if (response is Map &&
-        response.containsKey('inserted') &&
-        response['inserted'] is List &&
-        response['inserted'].isNotEmpty) {
-      return Map<String, dynamic>.from(response['inserted'][0]);
-    }
-    if (response is Map) return Map<String, dynamic>.from(response);
-    throw RobleApiException('No se pudo insertar el registro');
+  /// Inserta un registro y devuelve la fila creada, con su `_id`.
+  ///
+  /// Usa `/insert-one`, que devuelve el registro directamente. Si el servidor
+  /// rechaza la fila, responde con un error HTTP en lugar de un `200` vacío.
+  Future<Map<String, dynamic>> create(
+      String tableName, Map<String, dynamic> data) async {
+    final res = await _makeRequest(
+      'POST',
+      'insert-one',
+      body: {'tableName': tableName, 'record': data},
+    );
+
+    if (res is Map) return Map<String, dynamic>.from(res);
+    throw const RobleApiFormatException('No se pudo insertar el registro');
+  }
+
+  /// Inserta varios registros.
+  ///
+  /// El servidor responde `200` aunque rechace parte de los registros, así que
+  /// el resultado expone [RobleInsertResult.skipped]. Revísalo siempre:
+  ///
+  /// ```dart
+  /// final res = await db.createMany('usuarios', registros);
+  /// if (res.hasSkipped) {
+  ///   for (final s in res.skipped) {
+  ///     print('Fila ${s.index} rechazada: ${s.reason}');
+  ///   }
+  /// }
+  /// ```
+  Future<RobleInsertResult> createMany(
+      String tableName, List<Map<String, dynamic>> records) async {
+    final res = await _makeRequest(
+      'POST',
+      'insert',
+      body: {'tableName': tableName, 'records': records},
+    );
+
+    if (res is Map) return RobleInsertResult.fromJson(res);
+    throw const RobleApiFormatException(
+        'Respuesta inesperada al insertar registros');
   }
 
   Future<List<Map<String, dynamic>>> read(String tableName,
@@ -343,6 +508,51 @@ class RobleApiDataBase {
     return (res is Map) ? Map<String, dynamic>.from(res) : {};
   }
 
+  /// Lee una tabla marcada como pública, sin autenticación.
+  ///
+  /// Un `403` significa que la tabla no está configurada como pública en la
+  /// consola de Roble, no que el token sea inválido.
+  Future<List<Map<String, dynamic>>> publicRead(String tableName,
+      {Map<String, dynamic>? filters}) async {
+    final queryParams = <String, String>{'tableName': tableName};
+    if (filters != null) {
+      filters.forEach((k, v) => queryParams[k] = v.toString());
+    }
+
+    final res = await _makeRequest(
+      'GET',
+      'public-read',
+      queryParams: queryParams,
+      skipAuth: true,
+    );
+
+    if (res is List) return List<Map<String, dynamic>>.from(res);
+    if (res is Map && res['data'] is List) {
+      return List<Map<String, dynamic>>.from(res['data'] as List);
+    }
+    return [];
+  }
+
+  /// Ejecuta una consulta guardada previamente en la consola de Roble.
+  ///
+  /// Es la vía para joins, agregados, ordenamiento y paginación: [read] solo
+  /// admite filtros de igualdad. [id] es el UUID de la consulta guardada.
+  Future<RobleQueryResult> executeQuery(String id,
+      {List<dynamic>? params}) async {
+    final res = await _makeRequest(
+      'POST',
+      'execute-query',
+      body: {
+        'id': id,
+        if (params != null) 'params': params,
+      },
+    );
+
+    if (res is Map) return RobleQueryResult.fromJson(res);
+    throw const RobleApiFormatException(
+        'Respuesta inesperada al ejecutar la consulta');
+  }
+
   // ============================================================
   // ============= MÉTODOS DE CONVENIENCIA ======================
   // ============================================================
@@ -360,6 +570,4 @@ class RobleApiDataBase {
       String tableName, String column, dynamic value) async {
     return await read(tableName, filters: {column: value});
   }
-
-  Future<void> simulateGet() async {}
 }

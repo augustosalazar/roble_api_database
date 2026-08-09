@@ -1,5 +1,5 @@
 import 'package:flutter/material.dart';
-import 'package:roble_api_database/roble_api_database.dart';
+import 'package:roble/roble.dart';
 
 void main() {
   runApp(const RobleExampleApp());
@@ -22,13 +22,14 @@ class _RobleExampleAppState extends State<RobleExampleApp> {
   void initState() {
     super.initState();
     db = RobleApiDataBase(
-      config: const RobleApiConfig(
-        dataUrl:
-            'https://roble-api.openlab.uninorte.edu.co/database/robleapidatabase_e13b5d56c6',
-        authUrl:
-            'https://roble-api.openlab.uninorte.edu.co/auth/robleapidatabase_e13b5d56c6',
+      config: RobleApiConfig.fromContract(
+        baseUrl: 'https://roble-api.openlab.uninorte.edu.co',
+        contractId: 'robleapidatabase_e13b5d56c6',
       ),
     );
+
+    // El cliente avisa cada vez que cambia el access token.
+    db.onTokenUpdate = (token) => setState(() => _accessToken = token);
   }
 
   void _appendLog(String text) {
@@ -60,10 +61,7 @@ class _RobleExampleAppState extends State<RobleExampleApp> {
 
     try {
       _appendLog('Iniciando sesión con $_lastEmail...');
-      final res = await db.login(email: _lastEmail!, password: 'Password123!');
-      _accessToken = res['accessToken'];
-      // ignore: avoid_print
-      print(_accessToken);
+      await db.login(email: _lastEmail!, password: 'Password123!');
       _appendLog(
         ' Sesión iniciada. Token: ${_accessToken?.substring(0, 25)}...',
       );
@@ -80,8 +78,7 @@ class _RobleExampleAppState extends State<RobleExampleApp> {
 
     try {
       _appendLog('Cerrando sesión...');
-      await db.logout(accessToken: _accessToken!);
-      _accessToken = null;
+      await db.logout();
       _appendLog(' Sesión cerrada correctamente.');
     } catch (e) {
       _appendLog('Error al cerrar sesión: $e');

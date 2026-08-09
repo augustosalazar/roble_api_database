@@ -1,5 +1,5 @@
-name: roble_api_database_example
-description: Ejemplo de uso del paquete roble_api_database
+name: roble_example
+description: Ejemplo de uso del paquete roble
 publish_to: "none"
 
 environment:
@@ -10,7 +10,7 @@ dependencies:
     sdk: flutter
 
   # 👇 importante: usa el paquete padre mediante ruta local
-  roble_api_database:
+  roble:
     path: ../
 
 flutter:

@@ -1,8 +1,9 @@
-name: roble_api_database
-description: Cliente HTTP para interactuar con el backend Roble API.
-version: 1.0.3
-homepage: https://github.com/Arias3/roble_api_database
-repository: https://github.com/Arias3/roble_api_database
+name: roble
+description: "Cliente Flutter para la plataforma ROBLE de Uninorte OpenLab. Autenticación y CRUD sobre bases de datos PostgreSQL."
+version: 1.0.0
+homepage: https://github.com/augustosalazar/roble_api_database
+repository: https://github.com/augustosalazar/roble_api_database
+issue_tracker: https://github.com/augustosalazar/roble_api_database/issues
 
 environment:
   sdk: ">=3.0.0 <4.0.0"

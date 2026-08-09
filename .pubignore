@@ -1,0 +1,25 @@
+# pub usa este archivo EN LUGAR de .gitignore al empaquetar,
+# así que replica sus reglas y añade lo que no debe publicarse.
+
+# Flutter esencial
+.dart_tool/
+.packages
+.pub-cache/
+.pub/
+build/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Artefactos de compilación
+build/
+example/build/
+
+# Material que no forma parte del paquete
+Roble-API-Database-presentacion.pptx
+example/android/

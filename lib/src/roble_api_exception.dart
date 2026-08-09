@@ -1,4 +1,4 @@
-/// Excepciones personalizadas para el paquete `roble_api_database`.
+/// Excepciones personalizadas para el paquete `roble`.
 ///
 /// Este archivo define una jerarquía simple de excepciones
 /// para representar errores comunes durante la comunicación
