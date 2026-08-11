@@ -241,6 +241,72 @@ final editores = await db.getWhere('usuarios', 'rol', 'editor');
 
 ---
 
+## ⚡ Realtime
+
+El servicio Realtime es un árbol JSON por proyecto, con una API al estilo de Firebase Realtime Database. El primer segmento de la ruta es la colección.
+
+```dart
+final mensajes = db.realtime.ref('messages/general');
+
+final id = await mensajes.push({'texto': 'Hola', 'autor': 'ana'});
+await mensajes.child(id).update({'status': 'read'});
+
+final todos = await mensajes.get();
+final soloClaves = await mensajes.get(shallow: true);
+
+await mensajes.child(id).remove();
+```
+
+| Método | HTTP | Descripción |
+| --- | --- | --- |
+| `db.realtime.ref([path])` | — | Referencia a una ruta. Sin argumentos, la raíz del proyecto. |
+| `db.realtime.collections()` | `GET /realtime/{db}` | Nombres de las colecciones. |
+| `db.realtime.health()` | `GET /realtime/health` | Estado de PostgreSQL, event bus y CDC. Sin autenticación. |
+| `ref.get({shallow})` | `GET` | Valor JSON en la ruta. Con `shallow`, solo las claves inmediatas. |
+| `ref.set(value)` | `PUT` | Sobrescribe. Crea la colección si no existe. |
+| `ref.update(fields)` | `PATCH` | Fusiona campos con el objeto existente. |
+| `ref.push(value)` | `POST` | Agrega un hijo con ID autogenerado. Devuelve el ID. |
+| `ref.remove()` | `DELETE` | Elimina la ruta. Si es solo la colección, la elimina completa. |
+
+Las referencias son inmutables y navegables: `ref.child('a/b')`, `ref.parent`, `ref.key`, `ref.path`.
+
+Requiere que la configuración tenga `realtimeUrl`, que `RobleApiConfig.fromContract()` compone automáticamente.
+
+### Suscripciones en tiempo real
+
+Escuchar cambios abre un WebSocket contra el host de realtime. Ambas escuchas son `Stream`, así que se cancelan con `cancel()`.
+
+```dart
+// Valor del nodo: emite al suscribirse y tras cada cambio.
+final sub = db.realtime.ref('messages/general').onValue.listen((valor) {
+	setState(() => mensajes = valor);
+});
+
+await sub.cancel();
+```
+
+Para el evento crudo, sin releer nada:
+
+```dart
+final sub = db.realtime.ref('messages/general').onEvent.listen((e) {
+	print('${e.operation.name} en ${e.pathString}: ${e.newValue}');
+});
+```
+
+| Miembro | Descripción |
+| --- | --- |
+| `ref.onValue` | `Stream` con el valor actual del nodo al suscribirse y tras cada cambio. |
+| `ref.onEvent` | `Stream<RobleRealtimeEvent>`: `operation`, `path`, `pathString`, `oldValue`, `newValue`, `raw`. |
+| `db.realtime.status` | `RobleRealtimeStatus.disconnected/connecting/connected/error`. |
+| `db.realtime.onStatusChange` | Callback en cada cambio de estado. |
+| `db.realtime.close()` | Cierra el socket y cancela todas las escuchas. |
+
+Una escucha recibe los cambios de su ruta **y de sus descendientes**. El socket se abre solo cuando hay al menos una escucha, se comparte entre todas, se resuscribe al reconectar y se cierra cuando no queda ninguna.
+
+**`onValue` relee el nodo por REST tras cada evento.** El `newValue` del servidor es parcial y no distingue `PATCH` (fusiona) de `PUT` (sobrescribe), así que reconstruirlo en el cliente daría resultados incorrectos tras un `set()`. Si solo necesitas el evento, `onEvent` no hace ninguna petición extra.
+
+> ⚠️ **`set()` solo acepta objetos y mapas/listas.** A diferencia de Firebase, el servidor rechaza un escalar como cuerpo: `set(0)`, `set(false)` y `set('texto')` devuelven `400`. Para guardar un valor suelto, envuélvelo: `ref.set({'valor': 0})`.
+
 ## ❌ Manejo de errores
 
 Todas las llamadas lanzan una excepción que hereda de `RobleApiException`, así que puedes capturar el tipo concreto para reaccionar de forma distinta a cada fallo:

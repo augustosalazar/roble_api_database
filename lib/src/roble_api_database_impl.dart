@@ -3,10 +3,13 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:http/http.dart' as http;
+import 'package:socket_io_client/socket_io_client.dart' as sio;
 
 import 'roble_api_config.dart';
 import 'roble_api_exception.dart';
 import 'roble_models.dart';
+
+part 'roble_realtime.dart';
 
 /// Cliente HTTP robusto para interactuar con la API Roble.
 ///
@@ -23,6 +26,11 @@ class RobleApiDataBase {
   /// Callback opcional invocado cada vez que cambia el access token:
   /// login, refresco automático o logout. Útil para persistir la sesión.
   void Function(String? token)? onTokenUpdate;
+
+  RobleRealtime? _realtime;
+
+  /// Acceso al servicio Realtime: árbol JSON al estilo Firebase.
+  RobleRealtime get realtime => _realtime ??= RobleRealtime._(this);
 
   RobleApiDataBase({
     required this.config,
@@ -84,12 +92,14 @@ class RobleApiDataBase {
   Future<dynamic> _makeRequest(
     String method,
     String endpoint, {
-    Map<String, dynamic>? body,
+    Object? body,
     Map<String, String>? queryParams,
     bool isAuthRequest = false,
     bool skipAuth = false,
+    String? baseUrlOverride,
   }) async {
-    final baseUrl = isAuthRequest ? config.authUrl : config.dataUrl;
+    final baseUrl =
+        baseUrlOverride ?? (isAuthRequest ? config.authUrl : config.dataUrl);
     final uri = _buildUri(baseUrl, endpoint, queryParams);
     final headers = _buildHeaders(skipAuth: skipAuth);
 
@@ -108,9 +118,15 @@ class RobleApiDataBase {
               .timeout(config.timeout);
           break;
         case 'PUT':
-        case 'PATCH':
           response = await client
               .put(uri,
+                  headers: headers,
+                  body: body != null ? jsonEncode(body) : null)
+              .timeout(config.timeout);
+          break;
+        case 'PATCH':
+          response = await client
+              .patch(uri,
                   headers: headers,
                   body: body != null ? jsonEncode(body) : null)
               .timeout(config.timeout);
@@ -156,6 +172,7 @@ class RobleApiDataBase {
           queryParams: queryParams,
           isAuthRequest: isAuthRequest,
           skipAuth: skipAuth,
+          baseUrlOverride: baseUrlOverride,
         );
       }
 

@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:roble/roble.dart';
 
@@ -17,19 +19,31 @@ class _RobleExampleAppState extends State<RobleExampleApp> {
   String? _accessToken;
   String? _lastEmail;
   String _log = '';
+  RobleRealtimeStatus _rtStatus = RobleRealtimeStatus.disconnected;
+  StreamSubscription<dynamic>? _rtSub;
 
   @override
   void initState() {
     super.initState();
     db = RobleApiDataBase(
       config: RobleApiConfig.fromContract(
-        baseUrl: 'https://roble-api.openlab.uninorte.edu.co',
-        contractId: 'robleapidatabase_e13b5d56c6',
+        baseUrl: 'https://roble-api.test-openlab.uninorte.edu.co',
+        contractId: 'tu_contrato',
+        // El WebSocket de Realtime solo funciona contra el host de realtime.
+        realtimeBaseUrl: 'https://roble-realtime.test-openlab.uninorte.edu.co',
       ),
     );
 
     // El cliente avisa cada vez que cambia el access token.
     db.onTokenUpdate = (token) => setState(() => _accessToken = token);
+    db.realtime.onStatusChange = (s) => setState(() => _rtStatus = s);
+  }
+
+  @override
+  void dispose() {
+    _rtSub?.cancel();
+    db.realtime.close();
+    super.dispose();
   }
 
   void _appendLog(String text) {
@@ -153,6 +167,52 @@ class _RobleExampleAppState extends State<RobleExampleApp> {
     }
   }
 
+  // === REALTIME ===
+
+  RobleRealtimeRef get _salaRef => db.realtime.ref('demo/sala');
+
+  void _toggleRealtime() {
+    if (_rtSub != null) {
+      _rtSub!.cancel();
+      setState(() => _rtSub = null);
+      _appendLog('Escucha cancelada.');
+      return;
+    }
+
+    if (_accessToken == null) {
+      _appendLog('Debes iniciar sesión antes de escuchar en tiempo real.');
+      return;
+    }
+
+    // onValue emite el valor actual y vuelve a emitirlo tras cada cambio.
+    final sub = _salaRef.onValue.listen(
+      (valor) {
+        final n = valor is Map ? valor.length : 0;
+        _appendLog('Realtime: $n elemento(s) en ${_salaRef.path}');
+      },
+      onError: (Object e) => _appendLog('Error de realtime: $e'),
+    );
+
+    setState(() => _rtSub = sub);
+    _appendLog('Escuchando ${_salaRef.path}...');
+  }
+
+  Future<void> _pushRealtime() async {
+    if (_accessToken == null) {
+      _appendLog('Debes iniciar sesión antes de escribir.');
+      return;
+    }
+    try {
+      final id = await _salaRef.push({
+        'texto': 'Hola desde Flutter',
+        'timestamp': DateTime.now().toIso8601String(),
+      });
+      _appendLog('Elemento agregado: $id');
+    } catch (e) {
+      _appendLog('Error al agregar: $e');
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
@@ -190,12 +250,23 @@ class _RobleExampleAppState extends State<RobleExampleApp> {
                     onPressed: _testCrud,
                     child: const Text('Probar CRUD'),
                   ),
+                  ElevatedButton(
+                    onPressed: _toggleRealtime,
+                    child: Text(_rtSub == null
+                        ? 'Escuchar realtime'
+                        : 'Dejar de escuchar'),
+                  ),
+                  ElevatedButton(
+                    onPressed: _pushRealtime,
+                    child: const Text('Agregar a realtime'),
+                  ),
                 ],
               ),
               const SizedBox(height: 20),
-              const Align(
+              Align(
                 alignment: Alignment.centerLeft,
-                child: Text('Log de operaciones:'),
+                child: Text(
+                    'Log de operaciones (realtime: ${_rtStatus.name}):'),
               ),
               const SizedBox(height: 5),
               Expanded(

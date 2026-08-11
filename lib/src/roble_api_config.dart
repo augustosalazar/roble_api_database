@@ -17,6 +17,12 @@ class RobleApiConfig {
   /// URL base para endpoints de datos (CRUD, tablas, etc.).
   final String dataUrl;
 
+  /// URL base del servicio Realtime (`{host}/realtime/{contractId}`).
+  ///
+  /// Es `null` si la configuración se creó con URLs explícitas y no se indicó;
+  /// en ese caso, usar [RobleApiDataBase.realtime] lanza un error claro.
+  final String? realtimeUrl;
+
   /// Tiempo máximo de espera por petición. Por defecto 30 segundos.
   final Duration timeout;
 
@@ -27,6 +33,7 @@ class RobleApiConfig {
   const RobleApiConfig({
     required this.authUrl,
     required this.dataUrl,
+    this.realtimeUrl,
     this.timeout = defaultTimeout,
   });
 
@@ -55,21 +62,28 @@ class RobleApiConfig {
   /// // dataUrl: https://roble.test-openlab.uninorte.edu.co/database/token_contract_xyz
   /// ```
   ///
+  /// En Roble el servicio de realtime suele vivir en su propio host; pásalo
+  /// en [realtimeBaseUrl]. El WebSocket solo funciona contra ese host.
+  ///
   /// Si el contrato de autenticación y el proyecto de datos usan
   /// identificadores distintos, usa el constructor principal con `authUrl` y
   /// `dataUrl` completas.
   factory RobleApiConfig.fromContract({
     required String baseUrl,
     required String contractId,
+    String? realtimeBaseUrl,
     Duration timeout = defaultTimeout,
   }) {
-    final host = baseUrl.endsWith('/')
-        ? baseUrl.substring(0, baseUrl.length - 1)
-        : baseUrl;
+    String trim(String url) =>
+        url.endsWith('/') ? url.substring(0, url.length - 1) : url;
+
+    final host = trim(baseUrl);
+    final realtimeHost = trim(realtimeBaseUrl ?? baseUrl);
 
     return RobleApiConfig(
       authUrl: '$host/auth/$contractId',
       dataUrl: '$host/database/$contractId',
+      realtimeUrl: '$realtimeHost/realtime/$contractId',
       timeout: timeout,
     );
   }
@@ -78,11 +92,13 @@ class RobleApiConfig {
   RobleApiConfig copyWith({
     String? authUrl,
     String? dataUrl,
+    String? realtimeUrl,
     Duration? timeout,
   }) {
     return RobleApiConfig(
       authUrl: authUrl ?? this.authUrl,
       dataUrl: dataUrl ?? this.dataUrl,
+      realtimeUrl: realtimeUrl ?? this.realtimeUrl,
       timeout: timeout ?? this.timeout,
     );
   }
