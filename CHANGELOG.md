@@ -27,6 +27,12 @@ Primera versión publicada bajo el nombre `roble`. Sustituye al paquete
   Un solo socket compartido, resuscripción automática al reconectar y
   cancelación por colección cuando no quedan escuchas. Añade la dependencia
   `socket_io_client`.
+- **Persistencia de sesión opcional**: `RobleTokenStorage` + el parámetro
+  `storage` y `restoreSession()`. El cliente guarda la sesión en cada login y
+  refresco y la borra al cerrar sesión. Incluye `RobleMemoryStorage` para
+  pruebas. Sin `storage`, los tokens siguen viviendo solo en memoria.
+- Si el servidor rotara el refresh token al refrescar, ahora se conserva en
+  lugar de descartarse.
 - `register()` y `registerWithVerification()` aceptan un `extra` opcional
   (`Map<String, dynamic>`) con campos adicionales que el backend guarda junto
   al usuario. Se envía en el campo `extra` del cuerpo, y se omite si es nulo.

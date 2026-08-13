@@ -133,6 +133,46 @@ db.onTokenUpdate = (token) => persistir(token);
 
 El timeout por petición se configura en `RobleApiConfig.timeout` (30 segundos por defecto).
 
+### Mantener la sesión entre reinicios
+
+Sin `storage`, los tokens viven **solo en memoria**: al cerrar la app hay que volver a iniciar sesión. Pásale dónde guardarlos y el cliente se encarga del resto.
+
+```dart
+final db = RobleApiDataBase(
+	config: config,
+	storage: SecureRobleStorage(), // tu implementación
+);
+
+// Al arrancar, antes de pintar pantallas protegidas:
+if (await db.restoreSession()) {
+	// sesión activa; el access token se renueva solo si hace falta
+}
+```
+
+El cliente guarda la sesión en cada login y refresco, y la borra al cerrar sesión.
+
+Implementar `RobleTokenStorage` sobre `flutter_secure_storage` son tres métodos:
+
+```dart
+class SecureRobleStorage implements RobleTokenStorage {
+	final _storage = const FlutterSecureStorage();
+
+	@override
+	Future<String?> getItem(String key) => _storage.read(key: key);
+
+	@override
+	Future<void> setItem(String key, String value) =>
+			_storage.write(key: key, value: value);
+
+	@override
+	Future<void> removeItem(String key) => _storage.delete(key: key);
+}
+```
+
+Para pruebas, el paquete incluye `RobleMemoryStorage`, que guarda en un `Map`.
+
+> 🔐 En móvil usa un almacén seguro (Keychain/Keystore) en lugar de `SharedPreferences`. El refresh token es la credencial de larga duración: con él se obtienen access tokens nuevos sin la contraseña.
+
 ---
 
 ## 📚 Referencia de métodos

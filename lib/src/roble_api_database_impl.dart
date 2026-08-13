@@ -8,6 +8,7 @@ import 'package:socket_io_client/socket_io_client.dart' as sio;
 import 'roble_api_config.dart';
 import 'roble_api_exception.dart';
 import 'roble_models.dart';
+import 'roble_storage.dart';
 
 part 'roble_realtime.dart';
 
@@ -32,9 +33,17 @@ class RobleApiDataBase {
   /// Acceso al servicio Realtime: árbol JSON al estilo Firebase.
   RobleRealtime get realtime => _realtime ??= RobleRealtime._(this);
 
+  /// Dónde persistir la sesión. Si es `null`, los tokens viven solo en
+  /// memoria y se pierden al reiniciar la app.
+  final RobleTokenStorage? storage;
+
+  late final String _storageKey =
+      'roble.session.${config.authUrl.split('/').last}';
+
   RobleApiDataBase({
     required this.config,
     http.Client? client,
+    this.storage,
   }) : client = client ?? http.Client();
 
   // ============================================================
@@ -62,6 +71,64 @@ class RobleApiDataBase {
   void _updateAccessToken(String? token) {
     _accessToken = token;
     onTokenUpdate?.call(token);
+    // Único punto por el que pasan login, refresco, setTokens y clearTokens.
+    unawaited(_persistSession());
+  }
+
+  /// Restaura la sesión guardada, si la hay.
+  ///
+  /// Llámalo al arrancar la app, antes de pintar pantallas protegidas.
+  /// Devuelve `true` si había una sesión que restaurar.
+  ///
+  /// ```dart
+  /// if (await db.restoreSession()) {
+  ///   // sesión activa; el access token se renovará solo si hace falta
+  /// }
+  /// ```
+  Future<bool> restoreSession() async {
+    final store = storage;
+    if (store == null) return false;
+
+    try {
+      final raw = await store.getItem(_storageKey);
+      if (raw == null || raw.isEmpty) return false;
+
+      final data = jsonDecode(raw);
+      if (data is! Map) return false;
+
+      final access = data['accessToken'] as String?;
+      final refresh = data['refreshToken'] as String?;
+      if (access == null || refresh == null) return false;
+
+      _refreshToken = refresh;
+      _updateAccessToken(access);
+      return true;
+    } catch (_) {
+      // Sesión corrupta o almacenamiento no disponible: se empieza de cero.
+      return false;
+    }
+  }
+
+  /// Guarda o borra la sesión. Nunca hace fallar la petición en curso.
+  Future<void> _persistSession() async {
+    final store = storage;
+    if (store == null) return;
+
+    try {
+      final access = _accessToken;
+      final refresh = _refreshToken;
+
+      if (access != null && refresh != null) {
+        await store.setItem(
+          _storageKey,
+          jsonEncode({'accessToken': access, 'refreshToken': refresh}),
+        );
+      } else {
+        await store.removeItem(_storageKey);
+      }
+    } catch (_) {
+      // Almacenamiento lleno o sin permisos: la sesión sigue en memoria.
+    }
   }
 
   // ============================================================
@@ -385,6 +452,11 @@ class RobleApiDataBase {
     );
 
     if (res is Map && res.containsKey('accessToken')) {
+      // Hoy el servidor solo devuelve accessToken, pero si algún día rota el
+      // refresh token no hay que perderlo.
+      final rotated = res['refreshToken'] as String?;
+      if (rotated != null) _refreshToken = rotated;
+
       _updateAccessToken(res['accessToken'] as String?);
     } else {
       throw const RobleApiAuthException(
