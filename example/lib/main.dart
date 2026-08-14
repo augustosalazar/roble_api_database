@@ -75,9 +75,9 @@ class _RobleExampleAppState extends State<RobleExampleApp> {
 
     try {
       _appendLog('Iniciando sesión con $_lastEmail...');
-      await db.login(email: _lastEmail!, password: 'Password123!');
+      final user = await db.login(email: _lastEmail!, password: 'Password123!');
       _appendLog(
-        ' Sesión iniciada. Token: ${_accessToken?.substring(0, 25)}...',
+        ' Sesión iniciada como ${user['name']} (${user['userId']})',
       );
     } catch (e) {
       _appendLog('Error al iniciar sesión: $e');

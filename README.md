@@ -42,11 +42,12 @@ final user = await db.register(
 	name: 'Nombre Usuario',
 );
 
-// Iniciar sesión (guarda los tokens internamente)
-await db.login(
+// Iniciar sesión: guarda los tokens y devuelve el perfil
+final user = await db.login(
 	email: 'usuario@email.com',
 	password: 'Password123!',
 );
+print('${user['name']} ${user['userId']} ${user['extra']}');
 
 // Cerrar sesión (limpia los tokens)
 await db.logout();
@@ -185,8 +186,8 @@ Para pruebas, el paquete incluye `RobleMemoryStorage`, que guarda en un `Map`.
 | `registerWithVerification({email, password, name, extra})` | `POST /signup` | Registra y envía un código de 6 dígitos por correo. |
 | `verifyEmail({email, code})` | `POST /verify-email` | Confirma el correo con el código recibido. |
 | `resendCode({email})` | `POST /resend-code` | Reenvía el código de verificación. |
-| `login({email, password})` | `POST /login` | Inicia sesión y **almacena los tokens internamente**. Devuelve `{accessToken, refreshToken}`. |
-| `currentUser()` | `GET /verify-token` | Datos del usuario autenticado (`sub`, `email`, `dbName`, `sessionId`). Único endpoint que expone la identidad. |
+| `login({email, password})` | `POST /login` + `GET /me` | Inicia sesión, **almacena los tokens internamente** y devuelve el perfil. |
+| `currentUser()` | `GET /me` | Perfil del usuario autenticado: `userId`, `email`, `name`, `extra` y fechas. |
 | `forgotPassword({email})` | `POST /forgot-password` | Envía el correo de restablecimiento. |
 | `resetPassword({token, newPassword})` | `POST /reset-password` | Restablece la contraseña con el token del correo. |
 | `logout()` | `POST /logout` | Cierra la sesión y limpia los tokens. Lanza `RobleApiAuthException` si no hay sesión activa. |
@@ -206,8 +207,8 @@ await db.register(
 ```
 
 ```dart
-await db.login(email: 'ana@mail.com', password: 'Password123!');
-// db ya está autenticado a partir de aquí
+final user = await db.login(email: 'ana@mail.com', password: 'Password123!');
+// db ya está autenticado a partir de aquí; `user` trae userId, name y extra
 
 await db.logout(); // cierra sesión y limpia los tokens
 ```

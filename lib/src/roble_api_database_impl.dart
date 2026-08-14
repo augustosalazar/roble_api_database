@@ -351,7 +351,28 @@ class RobleApiDataBase {
     return (res is Map) ? Map<String, dynamic>.from(res) : {};
   }
 
-  /// Inicia sesión y almacena los tokens internamente.
+  /// Inicia sesión y devuelve el perfil del usuario.
+  ///
+  /// Los tokens se guardan internamente; si los necesitas están en
+  /// [accessToken] y [refreshToken].
+  ///
+  /// Tras autenticar, pide el perfil a `/me`. Si esa segunda llamada falla, la
+  /// sesión **sigue activa**: el error se propaga, pero [accessToken] ya tiene
+  /// valor, así que puedes distinguir un fallo de credenciales de uno de
+  /// perfil y reintentar con [currentUser].
+  ///
+  /// ```dart
+  /// try {
+  ///   final user = await db.login(email: email, password: password);
+  /// } catch (e) {
+  ///   if (db.accessToken != null) {
+  ///     // credenciales correctas, solo falló el perfil
+  ///     final user = await db.currentUser();
+  ///   } else {
+  ///     // credenciales inválidas o problema de red
+  ///   }
+  /// }
+  /// ```
   Future<Map<String, dynamic>> login({
     required String email,
     required String password,
@@ -368,7 +389,7 @@ class RobleApiDataBase {
       _updateAccessToken(res['accessToken'] as String?);
     }
 
-    return (res is Map) ? Map<String, dynamic>.from(res) : {};
+    return await currentUser();
   }
 
   /// Cierra la sesión en el servidor y descarta los tokens locales.
@@ -382,18 +403,16 @@ class RobleApiDataBase {
     clearTokens();
   }
 
-  /// Devuelve los datos del usuario autenticado (`sub`, `email`, `dbName`,
-  /// `sessionId`). Es el único endpoint que expone la identidad del usuario.
+  /// Devuelve el perfil del usuario autenticado: `userId`, `email`, `name`,
+  /// el `extra` que se envió al registrarse y las fechas del registro.
   ///
-  /// Lanza [RobleApiHttpException] con `401` si el token no es válido.
+  /// Lanza [RobleApiHttpException] con `401` si no hay sesión válida.
   Future<Map<String, dynamic>> currentUser() async {
-    final res = await _makeRequest('GET', 'verify-token', isAuthRequest: true);
+    final res = await _makeRequest('GET', 'me', isAuthRequest: true);
 
-    if (res is Map && res['user'] is Map) {
-      return Map<String, dynamic>.from(res['user'] as Map);
-    }
+    if (res is Map) return Map<String, dynamic>.from(res);
     throw const RobleApiFormatException(
-        'Respuesta inesperada al verificar el token.');
+        'Respuesta inesperada al obtener el usuario.');
   }
 
   /// Envía un correo con el enlace de restablecimiento de contraseña.

@@ -1,5 +1,35 @@
 # Changelog
 
+## 1.2.0
+
+### Cambios incompatibles
+
+- **`currentUser()` ahora devuelve el perfil del usuario, no los datos del
+  token.** Pasa de `GET /verify-token` a `GET /me`, que es lo que realmente
+  interesa a una app: `userId`, `email`, `name`, el `extra` del registro y las
+  fechas de creación y actualización. Antes devolvía los claims del JWT
+  (`sub`, `role`, `sessionId`), que son detalle interno de la autenticación.
+
+  | Antes (`/verify-token`) | Ahora (`/me`) |
+  | --- | --- |
+  | `sub` | `userId` |
+  | `email` | `email` |
+  | `dbName`, `role`, `sessionId` | — |
+  | — | `id`, `name`, `extra`, `createdAt`, `updatedAt` |
+
+  Si leías `user['sub']`, usa `user['userId']`. La librería ya no llama a
+  `/verify-token`: la validez del token la gestiona ella sola con el refresco
+  automático.
+
+- **`login()` devuelve el perfil del usuario, no los tokens.** Tras
+  autenticar pide `/me` y devuelve el mismo mapa que [currentUser]. Los tokens
+  se guardan internamente y siguen disponibles en `accessToken` y
+  `refreshToken`.
+
+  Si la llamada a `/me` falla, la sesión **sigue activa**: el error se propaga
+  pero `accessToken` ya tiene valor, así que se puede distinguir un fallo de
+  credenciales de uno de perfil y reintentar con `currentUser()`.
+
 ## 1.1.0
 
 ### Añadido
