@@ -574,6 +574,15 @@ flutter run
 
 ---
 
+## 👥 Autoría
+
+Creado originalmente por [Arias3](https://github.com/Arias3).
+Mantenido actualmente por **Augusto Salazar**
+(<augustosalazar@uninorte.edu.co>), Universidad del Norte, como líder de
+desarrollo.
+
+---
+
 ## 🛠️ Contribuciones
 
 Las contribuciones son bienvenidas. Abre un issue si encuentras un bug o quieres proponer una mejora.
