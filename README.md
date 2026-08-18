@@ -1,21 +1,16 @@
 # 📦 roble
 
-Paquete para Flutter que facilita la comunicación con la plataforma Roble API.
-https://roble.openlab.uninorte.edu.co/
-
-Este paquete provee una capa ligera para autenticación y operaciones CRUD sobre las bases de datos expuestas por Roble, manteniendo una interfaz simple y adecuada para aplicaciones móviles y de escritorio con Flutter.
+Cliente Flutter para la plataforma [ROBLE](https://roble.openlab.uninorte.edu.co/) de Uninorte OpenLab: autenticación y CRUD sobre PostgreSQL.
 
 https://github.com/augustosalazar/roble_api_database
 
-## 🚀 Instalación
+> 🔁 Existe un equivalente en JavaScript/TypeScript, [`roble-client`](https://github.com/augustosalazar/roble-api-database-ReNa), con los mismos métodos y las mismas excepciones.
 
-Agrega la dependencia en tu proyecto Flutter:
+## 🚀 Instalación
 
 ```bash
 flutter pub add roble
 ```
-
-Importa el paquete donde lo necesites:
 
 ```dart
 import 'package:roble/roble.dart';
@@ -25,374 +20,539 @@ import 'package:roble/roble.dart';
 
 ## 🧭 Quick start
 
-Ejemplo mínimo de uso (async/await):
-
 ```dart
 final db = RobleApiDataBase(
 	config: RobleApiConfig.fromContract(
-		baseUrl: 'https://tu-api.com',
-		contractId: 'tu-contrato',
+		baseUrl: 'https://roble-api.test-openlab.uninorte.edu.co',
+		contractId: 'tu_contrato',
 	),
 );
 
-// Registrar usuario
-final user = await db.register(
-	email: 'usuario@email.com',
-	password: 'Password123!',
-	name: 'Nombre Usuario',
+// 1. Registro
+await db.register(
+	email: 'ana@correo.com',
+	password: 'MiClave!1',
+	name: 'Ana García',
+	extra: {'programa': 'Sistemas'},
 );
 
-// Iniciar sesión: guarda los tokens y devuelve el perfil
-final user = await db.login(
-	email: 'usuario@email.com',
-	password: 'Password123!',
-);
-print('${user['name']} ${user['userId']} ${user['extra']}');
+// 2. Login: devuelve el perfil
+final user = await db.login(email: 'ana@correo.com', password: 'MiClave!1');
+print('Hola ${user['name']} (${user['userId']})');
 
-// Cerrar sesión (limpia los tokens)
+// 3. CRUD
+final creado = await db.create('usuarios', {'nombre': 'Ana', 'edad': 28});
+final todos = await db.read('usuarios');
+await db.update('usuarios', creado['_id'], {'edad': 29});
+await db.delete('usuarios', creado['_id']);
+
+// 4. Cerrar sesión
 await db.logout();
-
-// CREATE - Crear registro
-final nuevoUsuario = await db.create('usuarios', {
-	'nombre': 'Ana García',
-	'email': 'ana@email.com',
-	'edad': 28,
-});
-
-// READ - Leer todos los registros
-final usuarios = await db.read('usuarios');
-
-// UPDATE - Actualizar registro
-final actualizado = await db.update('usuarios', usuarioId, {
-	'edad': 29,
-});
-
-// DELETE - Eliminar registro
-final eliminado = await db.delete('usuarios', usuarioId);
 ```
 
-> Nota: todos los métodos son asíncronos y lanzan alguna subclase de `RobleApiException` en caso de error de red o respuesta no esperada. Usa `try/catch` alrededor de tus llamadas.
-
-> 🔁 Este paquete tiene un equivalente en JavaScript/TypeScript, [`roble-client`](https://github.com/augustosalazar/roble-api-database-ReNa), que **expone exactamente los mismos métodos** con las mismas excepciones.
+Todos los métodos son asíncronos y lanzan alguna subclase de `RobleApiException`. Ver [Manejo de errores](#-manejo-de-errores).
 
 ---
 
-## ⚙️ Configuración (`RobleApiConfig`)
+## ⚙️ Configuración
 
 `RobleApiConfig` es inmutable. Lo habitual es componerla desde el host y el identificador del contrato:
 
 ```dart
 final config = RobleApiConfig.fromContract(
-	baseUrl: 'https://roble.test-openlab.uninorte.edu.co',
-	contractId: 'token_contract_xyz',
-	timeout: Duration(seconds: 30), // opcional, 30 s por defecto
+	baseUrl: 'https://roble-api.test-openlab.uninorte.edu.co',
+	contractId: 'tu_contrato',
+	timeout: Duration(seconds: 30),
 );
-// authUrl: https://roble.test-openlab.uninorte.edu.co/auth/token_contract_xyz
-// dataUrl: https://roble.test-openlab.uninorte.edu.co/database/token_contract_xyz
 ```
 
-Una barra final en `baseUrl` se ignora. Eso es toda la configuración: `Content-Type: application/json` y `Authorization: Bearer …` los gestiona el cliente por su cuenta.
+| Parámetro | Tipo | Obligatorio | Descripción |
+| --- | --- | --- | --- |
+| `baseUrl` | `String` | sí | Host de la API. Una barra final se ignora. |
+| `contractId` | `String` | sí | Identificador del contrato, con el que se componen las rutas de auth y de datos. |
+| `timeout` | `Duration` | no | Tiempo máximo por petición. Por defecto 30 s. |
 
-Roble expone dos hosts, uno para autenticación y otro para datos. Si por algún motivo usan identificadores distintos, pasa las URLs completas al constructor principal:
+`Content-Type: application/json` y `Authorization: Bearer …` los gestiona el cliente; no hay que declararlos.
+
+`fromContract` es la única forma de crear la configuración: las URLs se componen siempre a partir del host y del contrato.
+
+### Constructor del cliente
 
 ```dart
-const config = RobleApiConfig(
-	authUrl: 'https://roble-api.openlab.uninorte.edu.co/auth/tu_contrato',
-	dataUrl: 'https://roble-api.openlab.uninorte.edu.co/database/tu_proyecto',
-);
+RobleApiDataBase({
+	required RobleApiConfig config,
+	http.Client? client,          // solo para tests
+	RobleTokenStorage? storage,   // solo para tests
+})
 ```
 
-### Otros miembros
+Los tokens **no se exponen**. El paquete los guarda en el almacén seguro del sistema, los adjunta a cada petición, los renueva ante un `401` y los borra al cerrar sesión. Lo único que se consulta desde fuera es `db.isLoggedIn`.
 
-| Miembro | Descripción |
+---
+
+## 🔐 Sesión
+
+### `bool get isLoggedIn`
+
+`true` si este cliente tiene una sesión iniciada. No consulta al servidor.
+
+```dart
+if (db.isLoggedIn) mostrarPerfil();
+```
+
+### `Future<bool> restoreSession({bool verify = true})`
+
+Restaura la sesión guardada y **comprueba contra el servidor que siga viva**. Llámalo al arrancar la app.
+
+| Parámetro | Tipo | Por defecto | Descripción |
+| --- | --- | --- | --- |
+| `verify` | `bool` | `true` | Si es `true`, renueva el access token contra el servidor. Con `false` solo lee el almacenamiento (más rápido, pero la sesión puede estar caducada). |
+
+**Devuelve** `true` si la sesión sirve; `false` si no había sesión guardada o el refresh token ya no vale (en ese caso limpia la sesión).
+
+**Errores**
+
+| Excepción | Cuándo |
 | --- | --- |
-| `RobleApiConfig.fromStrings({baseAuthUrl, baseDataUrl, timeout})` | Constructor abreviado a partir de dos URLs. |
-| `copyWith({authUrl, dataUrl, timeout})` | Clona la configuración reemplazando solo lo indicado. |
-| `validate()` | Lanza `ArgumentError` si alguna URL no empieza por `http`. |
-
----
-
-## 🔐 Manejo de tokens
-
-Tras un `login()` exitoso el cliente guarda internamente el `accessToken` y el `refreshToken`, y los adjunta como `Authorization: Bearer …` en todas las peticiones siguientes. No necesitas pasar el token manualmente en cada llamada.
+| `RobleApiNetworkException` | Sin conexión. **No borra la sesión**: distínguelo de "sesión caducada" y reintenta. |
+| `RobleApiTimeoutException` | El servidor no respondió a tiempo. Tampoco borra la sesión. |
 
 ```dart
-db.accessToken;  // String?
-db.refreshToken; // String?
-
-// Restaurar una sesión persistida (por ejemplo, desde SharedPreferences)
-db.setTokens(accessToken: guardado.access, refreshToken: guardado.refresh);
-
-// Descartar la sesión en memoria
-db.clearTokens();
-
-// Reaccionar a cada cambio del access token
-db.onTokenUpdate = (token) => persistir(token);
-```
-
-**Refresco automático:** si una petición de datos responde `401` y hay un `refreshToken` disponible, el cliente llama a `refresh-token`, actualiza el `accessToken` y reintenta la petición **una sola vez**. Esto ocurre de forma interna: no existe un método público para refrescar a mano. Si el refresco falla, lanza `RobleApiAuthException` con el detalle.
-
-El timeout por petición se configura en `RobleApiConfig.timeout` (30 segundos por defecto).
-
-### Mantener la sesión entre reinicios
-
-Sin `storage`, los tokens viven **solo en memoria**: al cerrar la app hay que volver a iniciar sesión. Pásale dónde guardarlos y el cliente se encarga del resto.
-
-```dart
-final db = RobleApiDataBase(
-	config: config,
-	storage: SecureRobleStorage(), // tu implementación
-);
-
-// Al arrancar, antes de pintar pantallas protegidas:
-if (await db.restoreSession()) {
-	// sesión activa; el access token se renueva solo si hace falta
+try {
+	if (await db.restoreSession()) {
+		irAlInicio();
+	} else {
+		irAlLogin();
+	}
+} on RobleApiNetworkException {
+	mostrarPantallaSinConexion();
 }
 ```
 
-El cliente guarda la sesión en cada login y refresco, y la borra al cerrar sesión.
+### Persistencia entre reinicios
 
-Implementar `RobleTokenStorage` sobre `flutter_secure_storage` son tres métodos:
+**No hay que configurar nada.** El paquete guarda la sesión en el almacén seguro del sistema (Keychain en iOS/macOS, Keystore en Android, almacenamiento cifrado en web, gestor de secretos en escritorio) mediante `flutter_secure_storage`. El refresh token es la credencial de larga duración, así que no va a `SharedPreferences`.
+
+El ciclo completo es:
 
 ```dart
-class SecureRobleStorage implements RobleTokenStorage {
-	final _storage = const FlutterSecureStorage();
+final db = RobleApiDataBase(config: config);   // sin storage
 
-	@override
-	Future<String?> getItem(String key) => _storage.read(key: key);
-
-	@override
-	Future<void> setItem(String key, String value) =>
-			_storage.write(key: key, value: value);
-
-	@override
-	Future<void> removeItem(String key) => _storage.delete(key: key);
-}
+await db.login(email: …, password: …);          // se guarda sola
+// … la app se cierra y se vuelve a abrir …
+await db.restoreSession();                      // vuelve la sesión
+await db.logout();                              // se borra
 ```
 
-Para pruebas, el paquete incluye `RobleMemoryStorage`, que guarda en un `Map`.
+En pruebas puedes sustituirlo por `RobleMemoryStorage`, que guarda en un `Map`:
 
-> 🔐 En móvil usa un almacén seguro (Keychain/Keystore) en lugar de `SharedPreferences`. El refresh token es la credencial de larga duración: con él se obtienen access tokens nuevos sin la contraseña.
+```dart
+final db = RobleApiDataBase(config: config, storage: RobleMemoryStorage());
+```
+
+Si el almacén no está disponible (por ejemplo en un test de Dart puro, sin plataforma), las operaciones fallan en silencio: la sesión sigue viva en memoria pero no se persiste.
 
 ---
 
-## 📚 Referencia de métodos
+## 🔑 Autenticación
 
-### Autenticación
-
-| Método | Endpoint | Descripción |
-| --- | --- | --- |
-| `register({email, password, name, extra})` | `POST /signup-direct` | Registra un usuario sin verificación por correo. Devuelve el usuario creado. |
-| `registerWithVerification({email, password, name, extra})` | `POST /signup` | Registra y envía un código de 6 dígitos por correo. |
-| `verifyEmail({email, code})` | `POST /verify-email` | Confirma el correo con el código recibido. |
-| `resendCode({email})` | `POST /resend-code` | Reenvía el código de verificación. |
-| `login({email, password})` | `POST /login` + `GET /me` | Inicia sesión, **almacena los tokens internamente** y devuelve el perfil. |
-| `currentUser()` | `GET /me` | Perfil del usuario autenticado: `userId`, `email`, `name`, `extra` y fechas. |
-| `forgotPassword({email})` | `POST /forgot-password` | Envía el correo de restablecimiento. |
-| `resetPassword({token, newPassword})` | `POST /reset-password` | Restablece la contraseña con el token del correo. |
-| `logout()` | `POST /logout` | Cierra la sesión y limpia los tokens. Lanza `RobleApiAuthException` si no hay sesión activa. |
-| `deleteAccount()` | `DELETE /account` | Elimina la cuenta permanentemente y limpia la sesión. Irreversible. |
-
-El refresco del token es interno (ver [Manejo de tokens](#-manejo-de-tokens)); no se expone ningún método público para invocarlo.
-
-Ambos métodos de registro aceptan un `extra` opcional con campos adicionales que el backend guarda junto al usuario:
+### `register`
 
 ```dart
-await db.register(
-	email: 'ana@mail.com',
+Future<Map<String, dynamic>> register({
+	required String email,
+	required String password,
+	required String name,
+	Map<String, dynamic>? extra,
+	bool autoLogin = false,
+	bool persistSession = true,
+})
+```
+
+Registra un usuario **sin verificación por correo**. La cuenta queda activa de inmediato. `POST /signup-direct`.
+
+| Parámetro | Tipo | Por defecto | Descripción |
+| --- | --- | --- | --- |
+| `email` | `String` | — | Correo del usuario. |
+| `password` | `String` | — | Mínimo 8 caracteres, con mayúscula, minúscula, número y un símbolo de `! @ # $ _ - .` |
+| `name` | `String` | — | Nombre visible. |
+| `extra` | `Map<String, dynamic>?` | `null` | Campos adicionales que el backend guarda con el usuario y devuelve en `login` y `currentUser`. |
+| `autoLogin` | `bool` | `false` | Si es `true`, inicia sesión al terminar el registro. |
+| `persistSession` | `bool` | `true` | Solo se aplica con `autoLogin: true`. Igual que en [`login`](#login). |
+
+**Devuelve** depende de `autoLogin`:
+
+| `autoLogin` | Devuelve |
+| --- | --- |
+| `false` | El mensaje del servidor: `{'message': 'Usuario registrado correctamente.'}` |
+| `true` | El perfil del usuario, lo mismo que [`login`](#login) |
+
+Si el registro funciona pero el login automático falla, **la cuenta ya está creada**: el error se propaga y `db.isLoggedIn` sigue en `false`, así que basta con reintentar `login()` sin volver a registrar.
+
+> `registerWithVerification` no tiene `autoLogin`: hasta validar el código del correo la cuenta no puede iniciar sesión.
+
+**Errores**
+
+| Excepción | Mensaje típico |
+| --- | --- |
+| `RobleApiHttpException` (400) | `El email ya está registrado` · contraseña que no cumple las reglas |
+| `RobleApiHttpException` (500) | `Error interno al registrar el usuario.` |
+
+```dart
+// Registro y a la pantalla principal en un solo paso
+final user = await db.register(
+	email: 'ana@correo.com',
 	password: 'MiClave!1',
 	name: 'Ana García',
-	extra: {'rol': 'admin', 'programa': 'Ingeniería de Sistemas'},
+	extra: {'rol': 'estudiante', 'programa': 'Sistemas'},
+	autoLogin: true,
+);
+print(user['userId']);
+```
+
+### `registerWithVerification`
+
+Misma firma que [`register`], pero envía un código de 6 dígitos por correo. `POST /signup`. El usuario no queda activo hasta llamar a `verifyEmail`.
+
+```dart
+await db.registerWithVerification(
+	email: 'ana@correo.com',
+	password: 'MiClave!1',
+	name: 'Ana García',
 );
 ```
 
-```dart
-final user = await db.login(email: 'ana@mail.com', password: 'Password123!');
-// db ya está autenticado a partir de aquí; `user` trae userId, name y extra
+### `verifyEmail`
 
-await db.logout(); // cierra sesión y limpia los tokens
+```dart
+Future<Map<String, dynamic>> verifyEmail({
+	required String email,
+	required String code,
+})
 ```
 
-### Tablas
+Confirma el correo con el código recibido. `POST /verify-email`.
 
-| Método | Endpoint | Descripción |
+**Errores**: `RobleApiHttpException` (400) si el código es inválido o expiró.
+
+```dart
+await db.verifyEmail(email: 'ana@correo.com', code: '123456');
+```
+
+### `resendCode`
+
+```dart
+Future<Map<String, dynamic>> resendCode({required String email})
+```
+
+Reenvía el código de verificación. `POST /resend-code`.
+
+### `login`
+
+```dart
+Future<Map<String, dynamic>> login({
+	required String email,
+	required String password,
+	bool persistSession = true,
+})
+```
+
+Inicia sesión y **devuelve el perfil del usuario**. Hace `POST /login` y, con el token ya guardado, `GET /me`.
+
+| Parámetro | Tipo | Por defecto | Descripción |
+| --- | --- | --- | --- |
+| `email` | `String` | — | Correo. |
+| `password` | `String` | — | Contraseña. |
+| `persistSession` | `bool` | `true` | Si la sesión debe sobrevivir al cierre de la app. Es el clásico "recordarme". |
+
+Con `persistSession: false` la sesión vive **solo en memoria**: todo funciona igual mientras la app esté abierta, pero al reiniciar habrá que volver a entrar. Además **borra cualquier sesión guardada antes**, para que no quede una sesión anterior recuperable en el dispositivo.
+
+```dart
+await db.login(
+	email: email,
+	password: password,
+	persistSession: recordarme, // p. ej. el valor de un checkbox
+);
+```
+
+**Devuelve**
+
+| Campo | Tipo | Descripción |
 | --- | --- | --- |
-| `createTable(tableName, columns)` | `POST /create-table` | Crea una tabla con las columnas indicadas. ⚠️ Endpoint no documentado por la API. |
-| `createTableFromTemplate({tableName, templateTableName})` | `POST /create-table-from-template` | Clona la estructura de columnas de una tabla existente. Único mecanismo documentado para crear tablas. |
-| `getTableData(tableName)` | `GET /table-data?schema=public&table=…` | Devuelve los datos de la tabla en el esquema `public`. ⚠️ Endpoint no documentado por la API. |
+| `userId` | `String` | Id del usuario. Es con lo que se comparan campos como `autorId`. |
+| `email` | `String` | Correo. |
+| `name` | `String` | Nombre. |
+| `extra` | `Map?` | Lo enviado en `register`, o `null`. |
+| `id` | `String` | Id del registro de perfil. |
+| `createdAt` / `updatedAt` | `String` | Fechas ISO-8601. |
+
+**Errores**
+
+| Excepción | Cuándo |
+| --- | --- |
+| `RobleApiHttpException` (401) | Credenciales incorrectas. |
+| `RobleApiNetworkException` | Sin conexión. |
+
+Si `POST /login` funciona pero `GET /me` falla, **la sesión queda activa** y la excepción se propaga. `db.isLoggedIn` distingue los dos casos:
 
 ```dart
-await db.createTable('usuarios_test', [
-	{'name': 'nombre', 'type': 'text'},
-	{'name': 'rol', 'type': 'text'},
-]);
-
-final filas = await db.getTableData('usuarios_test');
+try {
+	final user = await db.login(email: email, password: password);
+	irAlInicio(user);
+} catch (e) {
+	if (db.isLoggedIn) {
+		irAlInicio(await db.currentUser()); // credenciales OK, falló el perfil
+	} else {
+		mostrarError('Correo o contraseña incorrectos');
+	}
+}
 ```
 
-Cada columna es un mapa con al menos `name` y `type`. La descripción de la tabla se envía automáticamente.
-
-### CRUD
-
-| Método | Endpoint | Descripción |
-| --- | --- | --- |
-| `create(tableName, data)` | `POST /insert-one` | Inserta un registro y devuelve la fila creada, con su `_id`. |
-| `createMany(tableName, records)` | `POST /insert` | Inserta varios registros. Devuelve `RobleInsertResult` con `inserted` y `skipped`. |
-| `read(tableName, {filters})` | `GET /read` | Lee registros. Cada entrada de `filters` se envía como query param. Solo igualdad. |
-| `publicRead(tableName, {filters})` | `GET /public-read` | Lee una tabla pública **sin autenticación**. Un `403` indica que la tabla no está marcada como pública. |
-| `update(tableName, id, data)` | `PUT /update` | Actualiza por `_id`. Las claves `_id` e `id` se eliminan del cuerpo automáticamente. |
-| `delete(tableName, id)` | `DELETE /delete` | Elimina el registro cuyo `_id` coincida. |
-| `executeQuery(id, {params})` | `POST /execute-query` | Ejecuta una consulta guardada en la consola. Vía para joins, orden y paginación. |
-
-> ⚠️ **`createMany` puede tener éxito parcial.** `/insert` responde `200` aunque rechace registros. Revisa siempre `skipped`:
->
-> ```dart
-> final res = await db.createMany('usuarios', registros);
-> if (res.hasSkipped) {
->   for (final s in res.skipped) {
->     print('Fila ${s.index} rechazada: ${s.reason}');
->   }
-> }
-> ```
+### `currentUser`
 
 ```dart
-final creado = await db.create('usuarios', {'nombre': 'Juan', 'rol': 'admin'});
-
-final admins = await db.read('usuarios', filters: {'rol': 'admin'});
-
-await db.update('usuarios', creado['_id'], {'rol': 'editor'});
-await db.delete('usuarios', creado['_id']);
+Future<Map<String, dynamic>> currentUser()
 ```
 
-`update` y `delete` identifican el registro siempre por la columna `_id`; no es configurable desde el paquete.
+Perfil del usuario autenticado. `GET /me`. Mismo mapa que devuelve `login`.
 
-### Conveniencia
+**Errores**: `RobleApiHttpException` (401) si no hay sesión válida.
 
-| Método | Equivale a | Descripción |
-| --- | --- | --- |
-| `getAll(tableName)` | `read(tableName)` | Todos los registros de la tabla. |
-| `getById(tableName, id)` | `read(…, filters: {'_id': id})` | Un registro o `null` si no existe. |
-| `getWhere(tableName, column, value)` | `read(…, filters: {column: value})` | Registros que coinciden con una columna. |
+### `logout`
 
 ```dart
-final todos = await db.getAll('usuarios');
-final uno = await db.getById('usuarios', 'customid1234');
-final editores = await db.getWhere('usuarios', 'rol', 'editor');
+Future<void> logout()
 ```
+
+Cierra la sesión en el servidor y borra los tokens locales y del almacenamiento. `POST /logout`.
+
+**Errores**: `RobleApiAuthException` — `No hay token activo para cerrar sesión.`
+
+### `forgotPassword`
+
+```dart
+Future<Map<String, dynamic>> forgotPassword({required String email})
+```
+
+Envía el correo de restablecimiento. `POST /forgot-password`.
+
+**Errores**: `RobleApiHttpException` (400) si el correo no está registrado.
+
+### `resetPassword`
+
+```dart
+Future<Map<String, dynamic>> resetPassword({
+	required String token,
+	required String newPassword,
+})
+```
+
+Restablece la contraseña con el token que llega en el enlace del correo. `POST /reset-password`.
+
+**Errores**: `RobleApiHttpException` (400) si el token es inválido o expiró.
+
+### `deleteAccount`
+
+```dart
+Future<void> deleteAccount()
+```
+
+Elimina la cuenta autenticada de forma permanente y limpia la sesión. `DELETE /account`. **No se puede deshacer**: pide confirmación antes de llamarla.
+
+**Errores**: `RobleApiAuthException` — `No hay sesión activa para eliminar la cuenta.`
 
 ---
 
-## ⚡ Realtime
+## 🗄️ Datos
 
-El servicio Realtime es un árbol JSON por proyecto, con una API al estilo de Firebase Realtime Database. El primer segmento de la ruta es la colección.
+### `create`
 
 ```dart
-final mensajes = db.realtime.ref('messages/general');
-
-final id = await mensajes.push({'texto': 'Hola', 'autor': 'ana'});
-await mensajes.child(id).update({'status': 'read'});
-
-final todos = await mensajes.get();
-final soloClaves = await mensajes.get(shallow: true);
-
-await mensajes.child(id).remove();
+Future<Map<String, dynamic>> create(String tableName, Map<String, dynamic> data)
 ```
 
-| Método | HTTP | Descripción |
+Inserta un registro y devuelve la fila creada, con su `_id`. `POST /insert-one`.
+
+**Errores**: `RobleApiHttpException` (400) `Columnas inválidas: …` si algún campo no existe en la tabla; (500) si la tabla no existe.
+
+```dart
+final creado = await db.create('usuarios', {'nombre': 'Ana', 'edad': 28});
+print(creado['_id']);
+```
+
+### `createMany`
+
+```dart
+Future<RobleInsertResult> createMany(
+	String tableName,
+	List<Map<String, dynamic>> records, {
+	bool strict = false,
+})
+```
+
+Inserta varios registros. `POST /insert`.
+
+**Devuelve** `RobleInsertResult`:
+
+| Campo | Tipo | Descripción |
 | --- | --- | --- |
-| `db.realtime.ref([path])` | — | Referencia a una ruta. Sin argumentos, la raíz del proyecto. |
-| `db.realtime.collections()` | `GET /realtime/{db}` | Nombres de las colecciones. |
-| `db.realtime.health()` | `GET /realtime/health` | Estado de PostgreSQL, event bus y CDC. Sin autenticación. |
-| `ref.get({shallow})` | `GET` | Valor JSON en la ruta. Con `shallow`, solo las claves inmediatas. |
-| `ref.set(value)` | `PUT` | Sobrescribe. Crea la colección si no existe. |
-| `ref.update(fields)` | `PATCH` | Fusiona campos con el objeto existente. |
-| `ref.push(value)` | `POST` | Agrega un hijo con ID autogenerado. Devuelve el ID. |
-| `ref.remove()` | `DELETE` | Elimina la ruta. Si es solo la colección, la elimina completa. |
+| `inserted` | `List<Map<String, dynamic>>` | Filas insertadas, con su `_id`. |
+| `skipped` | `List<RobleSkippedRecord>` | Rechazadas: `index` y `reason`. |
+| `hasSkipped` | `bool` | `true` si hubo rechazos. |
 
-Las referencias son inmutables y navegables: `ref.child('a/b')`, `ref.parent`, `ref.key`, `ref.path`.
+> ⚠️ El servidor responde `200` aunque rechace registros. **Revisa siempre `skipped`**, o usa `strict: true` para que no se te olvide.
 
-Requiere que la configuración tenga `realtimeUrl`, que `RobleApiConfig.fromContract()` compone automáticamente.
-
-### Suscripciones en tiempo real
-
-Escuchar cambios abre un WebSocket contra el host de realtime. Ambas escuchas son `Stream`, así que se cancelan con `cancel()`.
+Con `strict: true` un rechazo parcial deja de ser algo que haya que recordar mirar y pasa a ser un error:
 
 ```dart
-// Valor del nodo: emite al suscribirse y tras cada cambio.
-final sub = db.realtime.ref('messages/general').onValue.listen((valor) {
-	setState(() => mensajes = valor);
-});
-
-await sub.cancel();
+try {
+	await db.createMany('usuarios', registros, strict: true);
+} on RoblePartialInsertException catch (e) {
+	// e.result.inserted -> lo que SÍ se escribió (útil para deshacer)
+	// e.result.skipped  -> qué se rechazó y por qué
+	print(e.message);
+}
 ```
 
-Para el evento crudo, sin releer nada:
+Sin `strict` hay que comprobarlo a mano:
 
 ```dart
-final sub = db.realtime.ref('messages/general').onEvent.listen((e) {
-	print('${e.operation.name} en ${e.pathString}: ${e.newValue}');
-});
+final res = await db.createMany('usuarios', registros);
+if (res.hasSkipped) {
+	for (final s in res.skipped) {
+		print('Fila ${s.index} rechazada: ${s.reason}');
+	}
+}
 ```
 
-| Miembro | Descripción |
-| --- | --- |
-| `ref.onValue` | `Stream` con el valor actual del nodo al suscribirse y tras cada cambio. |
-| `ref.onEvent` | `Stream<RobleRealtimeEvent>`: `operation`, `path`, `pathString`, `oldValue`, `newValue`, `raw`. |
-| `db.realtime.status` | `RobleRealtimeStatus.disconnected/connecting/connected/error`. |
-| `db.realtime.onStatusChange` | Callback en cada cambio de estado. |
-| `db.realtime.close()` | Cierra el socket y cancela todas las escuchas. |
+### `read`
 
-Una escucha recibe los cambios de su ruta **y de sus descendientes**. El socket se abre solo cuando hay al menos una escucha, se comparte entre todas, se resuscribe al reconectar y se cierra cuando no queda ninguna.
+```dart
+Future<List<Map<String, dynamic>>> read(
+	String tableName, {
+	Map<String, dynamic>? filters,
+})
+```
 
-**`onValue` relee el nodo por REST tras cada evento.** El `newValue` del servidor es parcial y no distingue `PATCH` (fusiona) de `PUT` (sobrescribe), así que reconstruirlo en el cliente daría resultados incorrectos tras un `set()`. Si solo necesitas el evento, `onEvent` no hace ninguna petición extra.
+Lee registros. `GET /read`. Cada entrada de `filters` viaja como query param y **solo admite igualdad**: no hay `LIKE`, rangos, orden ni paginación. Para eso está [`executeQuery`](#executequery).
 
-> ⚠️ **`set()` solo acepta objetos y mapas/listas.** A diferencia de Firebase, el servidor rechaza un escalar como cuerpo: `set(0)`, `set(false)` y `set('texto')` devuelven `400`. Para guardar un valor suelto, envuélvelo: `ref.set({'valor': 0})`.
+```dart
+final admins = await db.read('usuarios', filters: {'rol': 'admin'});
+```
+
+**Errores**: `RobleApiHttpException` (400) si la tabla o una columna no existen.
+
+### `update`
+
+```dart
+Future<Map<String, dynamic>> update(
+	String tableName,
+	dynamic id,
+	Map<String, dynamic> data,
+)
+```
+
+Actualiza el registro cuyo `_id` coincida. `PUT /update`. Las claves `_id` e `id` se eliminan del cuerpo automáticamente.
+
+**Errores**: `RobleApiHttpException` (404) si el registro no existe.
+
+### `delete`
+
+```dart
+Future<Map<String, dynamic>> delete(String tableName, dynamic id)
+```
+
+Elimina el registro cuyo `_id` coincida. `DELETE /delete`.
+
+### `publicRead`
+
+```dart
+Future<List<Map<String, dynamic>>> publicRead(
+	String tableName, {
+	Map<String, dynamic>? filters,
+})
+```
+
+Lee una tabla marcada como pública, **sin autenticación**. `GET /public-read`.
+
+**Errores**: `RobleApiHttpException` (403) — `Esta tabla no está configurada para acceso público`. Es configuración de la tabla en la consola, no un problema de token.
+
+### `executeQuery`
+
+```dart
+Future<RobleQueryResult> executeQuery(String id, {List<dynamic>? params})
+```
+
+Ejecuta una consulta guardada en la consola de Roble. `POST /execute-query`. Es la vía para joins, agregados, orden y paginación.
+
+**Devuelve** `RobleQueryResult` con `success`, `command`, `rowCount`, `rows` y `fields`.
+
+```dart
+final res = await db.executeQuery(
+	'ca7fe9c1-e740-4e50-82ba-bec89a0eec98',
+	params: ['activo'],
+);
+print('${res.rowCount} filas');
+```
+
+---
 
 ## ❌ Manejo de errores
 
-Todas las llamadas lanzan una excepción que hereda de `RobleApiException`, así que puedes capturar el tipo concreto para reaccionar de forma distinta a cada fallo:
+Todo lo que lanza el paquete hereda de `RobleApiException`, así que puedes capturar el tipo concreto:
 
-| Excepción | Cuándo se lanza | Mensaje |
+| Excepción | Cuándo | Mensaje |
 | --- | --- | --- |
 | `RobleApiNetworkException` | Sin red o DNS no resuelto | `Sin conexión a internet` |
-| `RobleApiTimeoutException` | La petición supera los 30 s | `Tiempo de espera agotado` |
-| `RobleApiFormatException` | La respuesta no se puede parsear | `Respuesta con formato inválido` |
-| `RobleApiHttpException` | El servidor responde con un código fuera de 2xx | El `message` del servidor (o el cuerpo crudo). Expone además `statusCode`. |
-| `RobleApiAuthException` | No hay refresh token, el refresco falla o su respuesta es inválida | `Token expirado y no se pudo refrescar: …` |
-| `RobleApiException` | Cualquier otro error inesperado | `Error inesperado: …` |
+| `RobleApiTimeoutException` | Se supera `config.timeout` | `Tiempo de espera agotado` |
+| `RobleApiFormatException` | Respuesta con forma inesperada | `Respuesta con formato inválido` · `No se pudo insertar el registro` · `El servidor no devolvió el ID generado.` |
+| `RobleApiHttpException` | Código fuera de 2xx | El `message` del servidor. Expone además `statusCode`. |
+| `RobleApiAuthException` | Problemas de sesión | `Token expirado y no se pudo refrescar: …` · `No hay token activo para cerrar sesión.` · `No hay refresh token disponible.` |
+| `RoblePartialInsertException` | `createMany(strict: true)` con filas rechazadas | `El servidor rechazó 1 de 3 registros: fila 2 (…)`. Expone `result`. |
+| `RobleApiException` | Cualquier otro | `Error inesperado: …` |
+
+`RobleApiConfig.fromContract` lanza `ArgumentError` (no `RobleApiException`) si `baseUrl` no es una URL o si el `contractId` está vacío o sigue siendo un valor de ejemplo: es un fallo de programación, no del servidor.
+
+Además, un `500` en autenticación es lo que devuelve Roble cuando **el contrato no existe**, así que a ese mensaje se le añade una pista:
+
+```
+Error inesperado al autenticar — revisa que el contractId sea correcto (mi_contrato_mal)
+```
 
 ```dart
 try {
 	final usuarios = await db.read('usuarios');
 } on RobleApiHttpException catch (e) {
 	debugPrint('El servidor respondió ${e.statusCode}: ${e.message}');
-} on RobleApiAuthException catch (e) {
-	debugPrint('Sesión expirada: ${e.message}');
-	// redirigir al login…
+} on RobleApiAuthException {
+	irAlLogin();
 } on RobleApiNetworkException {
-	debugPrint('Revisa tu conexión.');
+	mostrarPantallaSinConexion();
 } on RobleApiException catch (e) {
-	debugPrint('Fallo la lectura: ${e.message}');
+	debugPrint(e.message);
 }
 ```
 
-Captura siempre `RobleApiException` al final como red de seguridad: es la clase base de todas las anteriores.
+Captura siempre `RobleApiException` al final: es la clase base de todas.
+
+**Refresco automático.** Si una petición de datos responde `401` y hay refresh token, el cliente renueva el access token y reintenta **una sola vez**. Es interno: no hay método público para refrescar a mano.
 
 ---
 
 ## 🧪 Testing
 
-El constructor acepta un `http.Client` inyectado, lo que permite probar sin red:
+El constructor acepta un `http.Client` inyectado, así que se puede probar sin red:
 
 ```dart
 import 'package:http/testing.dart';
 import 'package:http/http.dart' as http;
 
 final db = RobleApiDataBase(
-	config: RobleApiConfig.fromStrings(
-		baseAuthUrl: 'https://fake/auth/proj',
-		baseDataUrl: 'https://fake/database/proj',
+	config: RobleApiConfig.fromContract(
+		baseUrl: 'https://fake.test',
+		contractId: 'proj',
 	),
+	storage: RobleMemoryStorage(), // evita tocar el almacén del sistema
 	client: MockClient((request) async {
 		return http.Response('[{"_id":"1","nombre":"Ana"}]', 200);
 	}),
@@ -405,7 +565,7 @@ final usuarios = await db.read('usuarios');
 
 ## 📱 Ejemplo completo
 
-El directorio [`example/`](example/) contiene una app Flutter que ejercita registro, login, logout, creación de tabla e inserción, y el ciclo CRUD completo, mostrando un log de cada operación.
+[`example/`](example/) es una app Flutter que ejercita registro con `autoLogin`, login con "recordarme", restauración de sesión al arrancar, `currentUser`, el CRUD completo e inserción múltiple con registros rechazados, con un log de cada operación.
 
 ```bash
 cd example
@@ -413,13 +573,7 @@ flutter run
 ```
 
 ---
+
 ## 🛠️ Contribuciones
 
-Las contribuciones son bienvenidas. Si encuentras un bug o quieres proponer una mejora:
-
-
-## Resumen
-
-`roble` es un cliente ligero para Flutter que simplifica las peticiones HTTPS hacia la plataforma Roble. No abstrae la lógica de negocio del backend: su objetivo es facilitar el consumo de endpoints estandarizados (auth + CRUD) con manejo consistente de errores y facilidad para testing.
-
-¡Las contribuciones y mejoras son muy bienvenidas! 🚀
+Las contribuciones son bienvenidas. Abre un issue si encuentras un bug o quieres proponer una mejora.

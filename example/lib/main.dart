@@ -1,5 +1,3 @@
-import 'dart:async';
-
 import 'package:flutter/material.dart';
 import 'package:roble/roble.dart';
 
@@ -14,260 +12,239 @@ class RobleExampleApp extends StatefulWidget {
   State<RobleExampleApp> createState() => _RobleExampleAppState();
 }
 
+/// 👇 Cámbialo por el identificador de tu proyecto en la consola de Roble.
+const kContractId = 'tu_contrato';
+const kBaseUrl = 'https://roble-api.test-openlab.uninorte.edu.co';
+
 class _RobleExampleAppState extends State<RobleExampleApp> {
-  late RobleApiDataBase db;
-  String? _accessToken;
+  RobleApiDataBase? _db;
+  String? _errorConfig;
+
   String? _lastEmail;
   String _log = '';
-  RobleRealtimeStatus _rtStatus = RobleRealtimeStatus.disconnected;
-  StreamSubscription<dynamic>? _rtSub;
+  bool _recordarme = true;
+
+  static const _tabla = 'usuarios_test';
+
+  RobleApiDataBase get db => _db!;
 
   @override
   void initState() {
     super.initState();
-    db = RobleApiDataBase(
-      config: RobleApiConfig.fromContract(
-        baseUrl: 'https://roble-api.test-openlab.uninorte.edu.co',
-        contractId: 'tu_contrato',
-        // El WebSocket de Realtime solo funciona contra el host de realtime.
-        realtimeBaseUrl: 'https://roble-realtime.test-openlab.uninorte.edu.co',
-      ),
-    );
 
-    // El cliente avisa cada vez que cambia el access token.
-    db.onTokenUpdate = (token) => setState(() => _accessToken = token);
-    db.realtime.onStatusChange = (s) => setState(() => _rtStatus = s);
+    // fromContract avisa si el contrato no está configurado.
+    try {
+      _db = RobleApiDataBase(
+        config: RobleApiConfig.fromContract(
+          baseUrl: kBaseUrl,
+          contractId: kContractId,
+        ),
+      );
+    } on ArgumentError catch (e) {
+      _errorConfig = '${e.message}\n\nEdita kContractId en example/lib/main.dart';
+      return;
+    }
+
+    _restaurarSesion();
   }
 
-  @override
-  void dispose() {
-    _rtSub?.cancel();
-    db.realtime.close();
-    super.dispose();
+  /// Al arrancar: si hay sesión guardada y sigue siendo válida, se reutiliza.
+  Future<void> _restaurarSesion() async {
+    try {
+      final activa = await db.restoreSession();
+      _appendLog(activa
+          ? 'Sesión restaurada: ${(await db.currentUser())['email']}'
+          : 'No hay sesión guardada.');
+    } on RobleApiNetworkException {
+      _appendLog('Sin conexión: no se pudo verificar la sesión.');
+    }
   }
 
   void _appendLog(String text) {
+    if (!mounted) return;
     setState(() => _log = '$_log$text\n');
   }
 
-  Future<void> _createUser() async {
+  // === AUTENTICACIÓN ===
+
+  Future<void> _registrar() async {
+    final email = 'test_${DateTime.now().millisecondsSinceEpoch}@mail.com';
+    _appendLog('Registrando $email…');
+
     try {
-      final email =
-          'test_user_${DateTime.now().millisecondsSinceEpoch}@mail.com';
-      _appendLog('Creando usuario: $email');
-      final res = await db.register(
+      // autoLogin deja la sesión iniciada y devuelve el perfil.
+      final user = await db.register(
         email: email,
         password: 'Password123!',
         name: 'Usuario Prueba',
+        extra: {'origen': 'ejemplo-flutter'},
+        autoLogin: true,
+        persistSession: _recordarme,
       );
       _lastEmail = email;
-      _appendLog('Usuario creado correctamente: ${res['email']}');
+      _appendLog('Registrado y dentro: ${user['name']} (${user['userId']})');
     } catch (e) {
-      _appendLog('Error creando usuario: $e');
+      _appendLog('Error registrando: $e');
     }
   }
 
-  Future<void> _loginUser() async {
+  Future<void> _login() async {
     if (_lastEmail == null) {
-      _appendLog('Primero crea un usuario antes de iniciar sesión.');
+      _appendLog('Primero crea un usuario.');
       return;
     }
 
     try {
-      _appendLog('Iniciando sesión con $_lastEmail...');
-      final user = await db.login(email: _lastEmail!, password: 'Password123!');
-      _appendLog(
-        ' Sesión iniciada como ${user['name']} (${user['userId']})',
+      final user = await db.login(
+        email: _lastEmail!,
+        password: 'Password123!',
+        persistSession: _recordarme,
       );
+      _appendLog('Sesión iniciada como ${user['name']}');
     } catch (e) {
-      _appendLog('Error al iniciar sesión: $e');
+      if (db.isLoggedIn) {
+        _appendLog('Sesión iniciada, pero falló el perfil: $e');
+      } else {
+        _appendLog('Credenciales incorrectas: $e');
+      }
     }
   }
 
-  Future<void> _logoutUser() async {
-    if (_accessToken == null) {
-      _appendLog('No hay sesión activa para cerrar.');
+  Future<void> _logout() async {
+    if (!db.isLoggedIn) {
+      _appendLog('No hay sesión activa.');
       return;
     }
-
     try {
-      _appendLog('Cerrando sesión...');
       await db.logout();
-      _appendLog(' Sesión cerrada correctamente.');
+      _appendLog('Sesión cerrada.');
     } catch (e) {
-      _appendLog('Error al cerrar sesión: $e');
+      _appendLog('Error cerrando sesión: $e');
     }
   }
 
-  Future<void> _createTestTable() async {
-    if (_accessToken == null) {
-      _appendLog('Debes iniciar sesión antes de crear tablas.');
+  Future<void> _quienSoy() async {
+    try {
+      final user = await db.currentUser();
+      _appendLog('${user['name']} · ${user['email']} · extra: ${user['extra']}');
+    } catch (e) {
+      _appendLog('Error: $e');
+    }
+  }
+
+  // === DATOS ===
+
+  Future<void> _probarCrud() async {
+    if (!db.isLoggedIn) {
+      _appendLog('Inicia sesión antes de probar el CRUD.');
       return;
     }
 
     try {
-      _appendLog('Creando tabla "usuarios_test"...');
-      await db.createTable('usuarios_test', [
-        {'name': 'nombre', 'type': 'text'},
-        {'name': 'rol', 'type': 'text'},
-      ]);
-      _appendLog(' Tabla creada correctamente.');
-    } catch (e) {
-      _appendLog('Error creando tabla: $e');
-    }
-  }
+      final creado = await db.create(_tabla, {'nombre': 'Ana', 'rol': 'admin'});
+      _appendLog('Creado: ${creado['_id']}');
 
-  Future<void> _insertIntoTestTable() async {
-    if (_accessToken == null) {
-      _appendLog('Debes iniciar sesión antes de agregar datos.');
-      return;
-    }
+      final todos = await db.read(_tabla);
+      _appendLog('Leídos: ${todos.length} registros');
 
-    try {
-      _appendLog('Insertando registro en "usuarios_test"...');
-      final created = await db.create('usuarios_test', {
-        'nombre': 'Carlos',
-        'rol': 'tester',
-      });
-      _appendLog(' Registro agregado: $created');
-    } catch (e) {
-      _appendLog('Error insertando registro: $e');
-    }
-  }
+      await db.update(_tabla, creado['_id'], {'rol': 'editor'});
+      _appendLog('Actualizado.');
 
-  Future<void> _testCrud() async {
-    if (_accessToken == null) {
-      _appendLog('Debes iniciar sesión antes de probar CRUD.');
-      return;
-    }
+      final uno = await db.getById(_tabla, creado['_id']);
+      _appendLog('getById: ${uno?['rol']}');
 
-    try {
-      _appendLog('Creando registro...');
-      final created = await db.create('usuarios_test', {
-        'nombre': 'Juan',
-        'rol': 'admin',
-      });
-      _appendLog(' Registro creado: $created');
-
-      _appendLog('Leyendo registros...');
-      final data = await db.read('usuarios_test');
-      _appendLog(' Datos obtenidos: ${data.length} registros');
-
-      _appendLog('Actualizando registro...');
-      final updated = await db.update('usuarios_test', created['_id'], {
-        'rol': 'editor',
-      });
-      _appendLog(' Registro actualizado: $updated');
-
-      _appendLog('Eliminando registro...');
-      final deleted = await db.delete('usuarios_test', created['_id']);
-      _appendLog(' Registro eliminado: $deleted');
+      await db.delete(_tabla, creado['_id']);
+      _appendLog('Eliminado.');
     } catch (e) {
       _appendLog('Error en CRUD: $e');
     }
   }
 
-  // === REALTIME ===
-
-  RobleRealtimeRef get _salaRef => db.realtime.ref('demo/sala');
-
-  void _toggleRealtime() {
-    if (_rtSub != null) {
-      _rtSub!.cancel();
-      setState(() => _rtSub = null);
-      _appendLog('Escucha cancelada.');
+  Future<void> _insertarVarios() async {
+    if (!db.isLoggedIn) {
+      _appendLog('Inicia sesión antes de insertar.');
       return;
     }
 
-    if (_accessToken == null) {
-      _appendLog('Debes iniciar sesión antes de escuchar en tiempo real.');
-      return;
-    }
-
-    // onValue emite el valor actual y vuelve a emitirlo tras cada cambio.
-    final sub = _salaRef.onValue.listen(
-      (valor) {
-        final n = valor is Map ? valor.length : 0;
-        _appendLog('Realtime: $n elemento(s) en ${_salaRef.path}');
-      },
-      onError: (Object e) => _appendLog('Error de realtime: $e'),
-    );
-
-    setState(() => _rtSub = sub);
-    _appendLog('Escuchando ${_salaRef.path}...');
-  }
-
-  Future<void> _pushRealtime() async {
-    if (_accessToken == null) {
-      _appendLog('Debes iniciar sesión antes de escribir.');
-      return;
-    }
     try {
-      final id = await _salaRef.push({
-        'texto': 'Hola desde Flutter',
-        'timestamp': DateTime.now().toIso8601String(),
-      });
-      _appendLog('Elemento agregado: $id');
+      final res = await db.createMany(_tabla, [
+        {'nombre': 'Uno', 'rol': 'admin'},
+        {'nombre': 'Dos', 'columna_inexistente': 1},
+      ]);
+
+      _appendLog('Insertados: ${res.inserted.length}');
+      if (res.hasSkipped) {
+        for (final s in res.skipped) {
+          _appendLog('  Fila ${s.index} rechazada: ${s.reason}');
+        }
+      }
     } catch (e) {
-      _appendLog('Error al agregar: $e');
+      _appendLog('Error insertando: $e');
     }
   }
+
+  // === UI ===
 
   @override
   Widget build(BuildContext context) {
+    if (_errorConfig != null) {
+      return MaterialApp(
+        home: Scaffold(
+          appBar: AppBar(title: const Text('Roble · configuración')),
+          body: Padding(
+            padding: const EdgeInsets.all(24),
+            child: Center(child: Text(_errorConfig!)),
+          ),
+        ),
+      );
+    }
+
     return MaterialApp(
       home: Scaffold(
-        appBar: AppBar(title: const Text('Roble API Tester')),
+        appBar: AppBar(title: const Text('Roble · ejemplo')),
         body: Padding(
           padding: const EdgeInsets.all(16.0),
           child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Wrap(
                 spacing: 10,
                 runSpacing: 10,
                 children: [
                   ElevatedButton(
-                    onPressed: _createUser,
-                    child: const Text('Crear usuario'),
+                    onPressed: _registrar,
+                    child: const Text('Registrar + entrar'),
                   ),
                   ElevatedButton(
-                    onPressed: _loginUser,
+                    onPressed: _login,
                     child: const Text('Iniciar sesión'),
                   ),
                   ElevatedButton(
-                    onPressed: _logoutUser,
+                    onPressed: _quienSoy,
+                    child: const Text('¿Quién soy?'),
+                  ),
+                  ElevatedButton(
+                    onPressed: _logout,
                     child: const Text('Cerrar sesión'),
                   ),
                   ElevatedButton(
-                    onPressed: _createTestTable,
-                    child: const Text('Crear tabla de prueba'),
-                  ),
-                  ElevatedButton(
-                    onPressed: _insertIntoTestTable,
-                    child: const Text('Agregar dato a tabla'),
-                  ),
-                  ElevatedButton(
-                    onPressed: _testCrud,
+                    onPressed: _probarCrud,
                     child: const Text('Probar CRUD'),
                   ),
                   ElevatedButton(
-                    onPressed: _toggleRealtime,
-                    child: Text(_rtSub == null
-                        ? 'Escuchar realtime'
-                        : 'Dejar de escuchar'),
-                  ),
-                  ElevatedButton(
-                    onPressed: _pushRealtime,
-                    child: const Text('Agregar a realtime'),
+                    onPressed: _insertarVarios,
+                    child: const Text('Insertar varios'),
                   ),
                 ],
               ),
-              const SizedBox(height: 20),
-              Align(
-                alignment: Alignment.centerLeft,
-                child: Text(
-                    'Log de operaciones (realtime: ${_rtStatus.name}):'),
+              CheckboxListTile(
+                value: _recordarme,
+                onChanged: (v) => setState(() => _recordarme = v ?? true),
+                title: const Text('Recordarme (persistSession)'),
+                contentPadding: EdgeInsets.zero,
+                controlAffinity: ListTileControlAffinity.leading,
               ),
+              const Text('Log de operaciones:'),
               const SizedBox(height: 5),
               Expanded(
                 child: Container(

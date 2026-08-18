@@ -3,14 +3,11 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:http/http.dart' as http;
-import 'package:socket_io_client/socket_io_client.dart' as sio;
 
 import 'roble_api_config.dart';
 import 'roble_api_exception.dart';
 import 'roble_models.dart';
 import 'roble_storage.dart';
-
-part 'roble_realtime.dart';
 
 /// Cliente HTTP robusto para interactuar con la API Roble.
 ///
@@ -18,113 +15,153 @@ part 'roble_realtime.dart';
 /// - Maneja timeouts, errores de red y parsing.
 /// - Expone métodos CRUD y auth adaptados al backend Roble.
 class RobleApiDataBase {
+  /// URLs base del proyecto.
   final RobleApiConfig config;
-  final http.Client client;
+
+  /// Dónde se persiste la sesión. Por defecto [RobleSecureStorage].
+  final RobleTokenStorage storage;
+
+  final http.Client _client;
 
   String? _accessToken;
   String? _refreshToken;
 
-  /// Callback opcional invocado cada vez que cambia el access token:
-  /// login, refresco automático o logout. Útil para persistir la sesión.
-  void Function(String? token)? onTokenUpdate;
-
-  RobleRealtime? _realtime;
-
-  /// Acceso al servicio Realtime: árbol JSON al estilo Firebase.
-  RobleRealtime get realtime => _realtime ??= RobleRealtime._(this);
-
-  /// Dónde persistir la sesión. Si es `null`, los tokens viven solo en
-  /// memoria y se pierden al reiniciar la app.
-  final RobleTokenStorage? storage;
+  /// Si la sesión debe sobrevivir al cierre de la app. Lo fija `login` con su
+  /// parámetro `persistSession` y afecta también a los refrescos posteriores.
+  bool _persistTokens = true;
 
   late final String _storageKey =
       'roble.session.${config.authUrl.split('/').last}';
 
+  /// Crea el cliente.
+  ///
+  /// La sesión se persiste sola en el almacén seguro del sistema; no hace
+  /// falta configurar nada. [storage] y [client] existen para poder
+  /// sustituirlos en pruebas.
   RobleApiDataBase({
     required this.config,
     http.Client? client,
-    this.storage,
-  }) : client = client ?? http.Client();
+    RobleTokenStorage? storage,
+  })  : _client = client ?? http.Client(),
+        storage = storage ?? RobleSecureStorage();
 
   // ============================================================
-  // ============= TOKENS =======================================
+  // ============= SESIÓN =======================================
   // ============================================================
 
-  /// Access token actual, o `null` si no hay sesión activa.
-  String? get accessToken => _accessToken;
+  /// `true` si hay una sesión iniciada en este cliente.
+  ///
+  /// No dice si el servidor la sigue aceptando: para eso está
+  /// [restoreSession].
+  bool get isLoggedIn => _accessToken != null && _accessToken!.isNotEmpty;
 
-  /// Refresh token actual, o `null` si no hay sesión activa.
-  String? get refreshToken => _refreshToken;
-
-  /// Restaura una sesión previamente persistida.
-  void setTokens({required String accessToken, required String refreshToken}) {
-    _refreshToken = refreshToken;
-    _updateAccessToken(accessToken);
+  void _updateAccessToken(String? token) {
+    _accessToken = token;
+    // Único punto por el que pasan login, refresco, logout y restauración.
+    unawaited(_persistSession());
   }
 
-  /// Descarta la sesión en memoria.
-  void clearTokens() {
+  /// Descarta la sesión en memoria y en el almacenamiento.
+  void _clearTokens() {
     _refreshToken = null;
     _updateAccessToken(null);
   }
 
-  void _updateAccessToken(String? token) {
-    _accessToken = token;
-    onTokenUpdate?.call(token);
-    // Único punto por el que pasan login, refresco, setTokens y clearTokens.
-    unawaited(_persistSession());
-  }
-
-  /// Restaura la sesión guardada, si la hay.
+  /// Restaura la sesión y comprueba que siga siendo válida.
   ///
-  /// Llámalo al arrancar la app, antes de pintar pantallas protegidas.
-  /// Devuelve `true` si había una sesión que restaurar.
+  /// Llámalo al arrancar la app, antes de pintar pantallas protegidas:
   ///
   /// ```dart
   /// if (await db.restoreSession()) {
-  ///   // sesión activa; el access token se renovará solo si hace falta
+  ///   irAlInicio();
+  /// } else {
+  ///   irAlLogin();
   /// }
   /// ```
-  Future<bool> restoreSession() async {
-    final store = storage;
-    if (store == null) return false;
+  ///
+  /// Carga los tokens del [storage] (si no hay ya una sesión en memoria) y
+  /// renueva el access token con el refresh token. Devuelve `true` solo si el
+  /// servidor acepta la renovación, así que un `true` significa que la sesión
+  /// sirve de verdad, no solo que había tokens guardados.
+  ///
+  /// Si el refresh token ya no vale, limpia la sesión y devuelve `false`.
+  ///
+  /// Los fallos de red **no** borran la sesión: se propaga la excepción
+  /// ([RobleApiNetworkException], [RobleApiTimeoutException]) para que la app
+  /// pueda distinguir "sesión caducada" de "sin conexión" y reintentar.
+  ///
+  /// Con [verify] en `false` solo carga los tokens del almacenamiento, sin
+  /// llamar al servidor: más rápido, pero la sesión puede estar caducada.
+  Future<bool> restoreSession({bool verify = true}) async {
+    // 1. Si no hay sesión en memoria, se intenta cargar del almacenamiento.
+    if (_refreshToken == null) await _loadStoredSession();
+    if (_refreshToken == null) return false;
 
+    // Si la sesión venía del almacén, se sigue persistiendo.
+    _persistTokens = true;
+
+    if (!verify) return true;
+
+    // 2. Renovar es la única forma de saber si el refresh token sigue vivo.
     try {
-      final raw = await store.getItem(_storageKey);
-      if (raw == null || raw.isEmpty) return false;
+      await _refreshAccessToken();
+      return true;
+    } on RobleApiNetworkException {
+      rethrow;
+    } on RobleApiTimeoutException {
+      rethrow;
+    } catch (_) {
+      // Token revocado o caducado: la sesión ya no sirve.
+      _clearTokens();
+      return false;
+    }
+  }
+
+  /// Borra la sesión guardada sin tocar la que hay en memoria.
+  Future<void> _forgetStoredSession() async {
+    try {
+      await storage.removeItem(_storageKey);
+    } catch (_) {
+      // Almacenamiento no disponible: no hay nada que borrar.
+    }
+  }
+
+  /// Carga los tokens guardados en [storage], si los hay.
+  Future<void> _loadStoredSession() async {
+    try {
+      final raw = await storage.getItem(_storageKey);
+      if (raw == null || raw.isEmpty) return;
 
       final data = jsonDecode(raw);
-      if (data is! Map) return false;
+      if (data is! Map) return;
 
       final access = data['accessToken'] as String?;
       final refresh = data['refreshToken'] as String?;
-      if (access == null || refresh == null) return false;
+      if (access == null || refresh == null) return;
 
       _refreshToken = refresh;
       _updateAccessToken(access);
-      return true;
     } catch (_) {
       // Sesión corrupta o almacenamiento no disponible: se empieza de cero.
-      return false;
     }
   }
 
   /// Guarda o borra la sesión. Nunca hace fallar la petición en curso.
   Future<void> _persistSession() async {
-    final store = storage;
-    if (store == null) return;
-
     try {
       final access = _accessToken;
       final refresh = _refreshToken;
 
       if (access != null && refresh != null) {
-        await store.setItem(
+        // Con `persistSession: false` la sesión vive solo en memoria.
+        if (!_persistTokens) return;
+        await storage.setItem(
           _storageKey,
           jsonEncode({'accessToken': access, 'refreshToken': refresh}),
         );
       } else {
-        await store.removeItem(_storageKey);
+        // Al cerrar sesión se limpia siempre, se estuviera persistiendo o no.
+        await storage.removeItem(_storageKey);
       }
     } catch (_) {
       // Almacenamiento lleno o sin permisos: la sesión sigue en memoria.
@@ -175,31 +212,31 @@ class RobleApiDataBase {
       switch (method.toUpperCase()) {
         case 'GET':
           response =
-              await client.get(uri, headers: headers).timeout(config.timeout);
+              await _client.get(uri, headers: headers).timeout(config.timeout);
           break;
         case 'POST':
-          response = await client
+          response = await _client
               .post(uri,
                   headers: headers,
                   body: body != null ? jsonEncode(body) : null)
               .timeout(config.timeout);
           break;
         case 'PUT':
-          response = await client
+          response = await _client
               .put(uri,
                   headers: headers,
                   body: body != null ? jsonEncode(body) : null)
               .timeout(config.timeout);
           break;
         case 'PATCH':
-          response = await client
+          response = await _client
               .patch(uri,
                   headers: headers,
                   body: body != null ? jsonEncode(body) : null)
               .timeout(config.timeout);
           break;
         case 'DELETE':
-          response = await client
+          response = await _client
               .delete(uri,
                   headers: headers,
                   body: body != null ? jsonEncode(body) : null)
@@ -257,6 +294,14 @@ class RobleApiDataBase {
           msg = response.body;
         }
       }
+
+      // Un 500 en autenticación es lo que devuelve Roble cuando el contrato
+      // no existe; sin esta pista el mensaje no ayuda nada a diagnosticarlo.
+      if (isAuthRequest && response.statusCode == 500) {
+        msg = '$msg — revisa que el contractId sea correcto '
+            '(${config.authUrl.split('/').last})';
+      }
+
       throw RobleApiHttpException(response.statusCode, msg);
     } on RobleApiException {
       // Ya es una excepción del paquete: la propagamos sin envolverla.
@@ -276,15 +321,41 @@ class RobleApiDataBase {
   // ============= MÉTODOS DE AUTENTICACIÓN =====================
   // ============================================================
 
-  /// Registra un usuario sin verificación por correo.
+  /// Registra un usuario sin verificación por correo. La cuenta queda activa
+  /// de inmediato.
   ///
   /// [extra] son campos adicionales opcionales que el backend guarda junto al
   /// usuario; se envían tal cual en el campo `extra` del cuerpo.
+  ///
+  /// **Lo que devuelve depende de [autoLogin]:**
+  ///
+  /// - `false` (por defecto): el mensaje del servidor, p. ej.
+  ///   `{'message': 'Usuario registrado correctamente.'}`.
+  /// - `true`: inicia sesión y devuelve el perfil, lo mismo que [login].
+  ///
+  /// [persistSession] solo se aplica cuando [autoLogin] es `true`, y hace lo
+  /// mismo que en [login].
+  ///
+  /// Si el registro funciona pero el login automático falla, **la cuenta ya
+  /// está creada**: el error se propaga y [isLoggedIn] sigue en `false`, así
+  /// que basta con reintentar [login] sin volver a registrar.
+  ///
+  /// ```dart
+  /// final user = await db.register(
+  ///   email: 'ana@correo.com',
+  ///   password: 'MiClave!1',
+  ///   name: 'Ana García',
+  ///   autoLogin: true,
+  /// );
+  /// print(user['userId']);
+  /// ```
   Future<Map<String, dynamic>> register({
     required String email,
     required String password,
     required String name,
     Map<String, dynamic>? extra,
+    bool autoLogin = false,
+    bool persistSession = true,
   }) async {
     final res = await _makeRequest(
       'POST',
@@ -297,6 +368,15 @@ class RobleApiDataBase {
       },
       isAuthRequest: true,
     );
+
+    if (autoLogin) {
+      return await login(
+        email: email,
+        password: password,
+        persistSession: persistSession,
+      );
+    }
+
     return (res is Map) ? Map<String, dynamic>.from(res) : {};
   }
 
@@ -353,8 +433,13 @@ class RobleApiDataBase {
 
   /// Inicia sesión y devuelve el perfil del usuario.
   ///
-  /// Los tokens se guardan internamente; si los necesitas están en
-  /// [accessToken] y [refreshToken].
+  /// Con [persistSession] en `true` (por defecto) la sesión se guarda en el
+  /// almacén seguro y sobrevive al cierre de la app; con `false` vive solo en
+  /// memoria: todo funciona igual mientras la app esté abierta, pero al
+  /// reiniciar habrá que volver a entrar. Es el clásico "recordarme".
+  ///
+  /// Poner `false` **borra además cualquier sesión guardada antes**, para que
+  /// no quede una sesión anterior recuperable en el dispositivo.
   ///
   /// Tras autenticar, pide el perfil a `/me`. Si esa segunda llamada falla, la
   /// sesión **sigue activa**: el error se propaga, pero [accessToken] ya tiene
@@ -376,6 +461,7 @@ class RobleApiDataBase {
   Future<Map<String, dynamic>> login({
     required String email,
     required String password,
+    bool persistSession = true,
   }) async {
     final res = await _makeRequest(
       'POST',
@@ -383,6 +469,10 @@ class RobleApiDataBase {
       body: {'email': email, 'password': password},
       isAuthRequest: true,
     );
+
+    _persistTokens = persistSession;
+    // Si esta vez no se quiere recordar la sesión, se borra la anterior.
+    if (!persistSession) await _forgetStoredSession();
 
     if (res is Map) {
       _refreshToken = res['refreshToken'] as String?;
@@ -400,7 +490,7 @@ class RobleApiDataBase {
     }
 
     await _makeRequest('POST', 'logout', isAuthRequest: true);
-    clearTokens();
+    _clearTokens();
   }
 
   /// Devuelve el perfil del usuario autenticado: `userId`, `email`, `name`,
@@ -451,7 +541,7 @@ class RobleApiDataBase {
     }
 
     await _makeRequest('DELETE', 'account', isAuthRequest: true);
-    clearTokens();
+    _clearTokens();
   }
 
   /// Refresca el access token con el refresh token almacenado.
@@ -484,48 +574,8 @@ class RobleApiDataBase {
   }
 
   // ============================================================
-  // ============= MÉTODOS DE TABLAS / CRUD =====================
+  // ============= DATOS ========================================
   // ============================================================
-
-  Future<void> createTable(
-      String tableName, List<Map<String, dynamic>> columns) async {
-    await _makeRequest(
-      'POST',
-      'create-table',
-      body: {
-        'tableName': tableName,
-        'description': 'Tabla $tableName creada desde cliente móvil',
-        'columns': columns,
-      },
-    );
-  }
-
-  Future<dynamic> getTableData(String tableName) async {
-    return await _makeRequest(
-      'GET',
-      'table-data',
-      queryParams: {'schema': 'public', 'table': tableName},
-    );
-  }
-
-  /// Clona la estructura de columnas de una tabla existente.
-  ///
-  /// Es el único mecanismo de creación de tablas documentado por la API, y
-  /// requiere que [templateTableName] ya exista. No copia los datos.
-  Future<Map<String, dynamic>> createTableFromTemplate({
-    required String tableName,
-    required String templateTableName,
-  }) async {
-    final res = await _makeRequest(
-      'POST',
-      'create-table-from-template',
-      body: {
-        'tableName': tableName,
-        'templateTableName': templateTableName,
-      },
-    );
-    return (res is Map) ? Map<String, dynamic>.from(res) : {};
-  }
 
   /// Inserta un registro y devuelve la fila creada, con su `_id`.
   ///
@@ -557,16 +607,30 @@ class RobleApiDataBase {
   /// }
   /// ```
   Future<RobleInsertResult> createMany(
-      String tableName, List<Map<String, dynamic>> records) async {
+    String tableName,
+    List<Map<String, dynamic>> records, {
+    bool strict = false,
+  }) async {
     final res = await _makeRequest(
       'POST',
       'insert',
       body: {'tableName': tableName, 'records': records},
     );
 
-    if (res is Map) return RobleInsertResult.fromJson(res);
-    throw const RobleApiFormatException(
-        'Respuesta inesperada al insertar registros');
+    if (res is! Map) {
+      throw const RobleApiFormatException(
+          'Respuesta inesperada al insertar registros');
+    }
+
+    final result = RobleInsertResult.fromJson(res);
+
+    // Con `strict` el rechazo parcial deja de ser algo que haya que recordar
+    // mirar: se convierte en un error.
+    if (strict && result.hasSkipped) {
+      throw RoblePartialInsertException(result);
+    }
+
+    return result;
   }
 
   Future<List<Map<String, dynamic>>> read(String tableName,
@@ -661,21 +725,14 @@ class RobleApiDataBase {
         'Respuesta inesperada al ejecutar la consulta');
   }
 
-  // ============================================================
-  // ============= MÉTODOS DE CONVENIENCIA ======================
-  // ============================================================
-
-  Future<List<Map<String, dynamic>>> getAll(String tableName) async {
-    return await read(tableName);
-  }
-
+  /// Devuelve el registro con ese `_id`, o `null` si no existe.
+  ///
+  /// ```dart
+  /// final usuario = await db.getById('usuarios', 'customid1234');
+  /// if (usuario == null) mostrarNoEncontrado();
+  /// ```
   Future<Map<String, dynamic>?> getById(String tableName, dynamic id) async {
     final results = await read(tableName, filters: {'_id': id});
     return results.isNotEmpty ? results.first : null;
-  }
-
-  Future<List<Map<String, dynamic>>> getWhere(
-      String tableName, String column, dynamic value) async {
-    return await read(tableName, filters: {column: value});
   }
 }

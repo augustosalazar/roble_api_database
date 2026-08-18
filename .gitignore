@@ -16,3 +16,7 @@ Thumbs.db
 # Ignorar artefactos de compilación de Flutter/Dart
 build/
 example/build/
+
+# Generado por Flutter al resolver plugins
+.flutter-plugins-dependencies
+example/.flutter-plugins-dependencies

@@ -1,5 +1,93 @@
 # Changelog
 
+## 1.3.0
+
+### Añadido
+
+- **`createMany(..., strict: true)`** lanza `RoblePartialInsertException` si el
+  servidor rechaza alguna fila, en vez de confiar en que quien llama revise
+  `skipped`. La excepción conserva el resultado completo, así que se sabe qué
+  sí llegó a escribirse.
+- **`RobleApiConfig.fromContract` valida sus argumentos** y lanza
+  `ArgumentError` si `baseUrl` no es una URL o si el `contractId` está vacío o
+  sigue siendo un valor de ejemplo. Antes eso se manifestaba como un `500`
+  incomprensible en la primera petición.
+- **Pista en el `500` de autenticación**: es lo que devuelve Roble cuando el
+  contrato no existe, así que ahora el mensaje lo sugiere en lugar de dejar
+  solo `Error inesperado al autenticar`.
+- **`register(autoLogin: true)`** inicia sesión al terminar el registro y
+  devuelve el perfil, igual que `login`. Por defecto es `false` y se sigue
+  devolviendo el mensaje del servidor. `registerWithVerification` no lo
+  admite: hasta validar el código del correo la cuenta no puede entrar.
+- **`login(persistSession: false)`** mantiene la sesión solo en memoria: sirve
+  para todo mientras la app esté abierta, pero no sobrevive al reinicio. Es el
+  "recordarme" de siempre. Poner `false` **borra además la sesión que hubiera
+  guardada**, para no dejar una sesión anterior recuperable en el dispositivo.
+  El valor se respeta también en los refrescos automáticos posteriores.
+
+### Cambios incompatibles
+
+- **El servicio Realtime sale de la API pública.** `db.realtime` y los tipos
+  `RobleRealtime*` se retiran mientras se estabiliza, junto con la dependencia
+  `socket_io_client`. El código sigue en el historial (`v1.2.0`) para
+  reincorporarlo más adelante.
+
+- **Se recorta la superficie de datos a lo esencial.** Desaparecen
+  `createTable()` y `getTableData()` —usaban endpoints que ROBLE no
+  documenta—, `createTableFromTemplate()` (las tablas se crean en la consola)
+  y los envoltorios `getAll()` y `getWhere()`, que eran `read()` con otro
+  nombre. Se mantiene `getById()`, que sí aporta: devuelve una fila o `null`.
+
+  | Antes | Ahora |
+  | --- | --- |
+  | `getAll(tabla)` | `read(tabla)` |
+  | `getWhere(tabla, col, valor)` | `read(tabla, filters: {col: valor})` |
+
+- **La sesión se persiste sola.** El paquete usa `flutter_secure_storage`
+  (Keychain / Keystore / almacenamiento cifrado) por defecto, así que ya no
+  hay que implementar ni pasar un `RobleTokenStorage`. El parámetro `storage`
+  sigue existiendo para sustituirlo en pruebas por `RobleMemoryStorage`.
+
+  Esto añade la dependencia `flutter_secure_storage` y sube el SDK mínimo a
+  Dart 3.3 / Flutter 3.19.
+
+- **`RobleApiConfig` solo se crea con `fromContract()`.** El constructor con
+  `authUrl`/`dataUrl`/`realtimeUrl` sueltas pasa a ser privado, y desaparecen
+  `fromStrings()`, `copyWith()` y `validate()`. Las URLs se componen siempre a
+  partir del host y del identificador del contrato.
+
+- **La sesión deja de ser manipulable desde fuera.** Se eliminan de la API
+  pública `accessToken`, `refreshToken`, `setTokens()`, `clearTokens()` y
+  `onTokenUpdate`, y el `http.Client` pasa a ser privado. El paquete guarda
+  los tokens, los adjunta a cada petición, los renueva ante un `401` y los
+  borra al cerrar sesión; nada de eso necesita intervención de la app.
+
+  En su lugar hay un único miembro de consulta:
+
+  ```dart
+  bool get isLoggedIn
+  ```
+
+  Equivalencias: `db.accessToken != null` → `db.isLoggedIn`; guardar tokens a
+  mano → pasar un `storage` al constructor; restaurar sesión →
+  `restoreSession()`; borrarla → `logout()`. El `http.Client` se sigue
+  pudiendo inyectar por el constructor para pruebas, pero ya no se expone.
+
+### Cambiado
+
+- **`restoreSession()` ahora comprueba que la sesión siga viva.** Además de
+  cargar los tokens guardados, renueva el access token contra el servidor, así
+  que un `true` significa que la sesión sirve de verdad y no solo que había
+  tokens en el almacenamiento. Si el refresh token caducó o fue revocado,
+  limpia la sesión y devuelve `false`.
+
+  Los fallos de red **no** borran la sesión: se propagan
+  `RobleApiNetworkException` y `RobleApiTimeoutException` para poder
+  distinguir "sesión caducada" de "sin conexión".
+
+  Con `restoreSession(verify: false)` se mantiene el comportamiento anterior
+  de solo leer el almacenamiento.
+
 ## 1.2.0
 
 ### Cambios incompatibles

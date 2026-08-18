@@ -15,6 +15,8 @@
 /// }
 /// ```
 
+import 'roble_models.dart';
+
 /// Excepción base para todos los errores del cliente Roble API.
 ///
 /// Contiene un mensaje descriptivo, un posible código de error
@@ -71,4 +73,19 @@ class RobleApiTimeoutException extends RobleApiException {
 /// Error cuando las credenciales son inválidas o el token expira.
 class RobleApiAuthException extends RobleApiException {
   const RobleApiAuthException(String message) : super(message);
+}
+
+/// El servidor aceptó la petición pero rechazó parte de los registros.
+///
+/// Solo la lanza `createMany(..., strict: true)`. Conserva el resultado
+/// completo para poder saber **qué sí se escribió**, algo necesario si hay que
+/// deshacer la operación.
+class RoblePartialInsertException extends RobleApiException {
+  /// Filas insertadas y rechazadas, tal cual las devolvió el servidor.
+  final RobleInsertResult result;
+
+  RoblePartialInsertException(this.result)
+      : super('El servidor rechazó ${result.skipped.length} de '
+            '${result.inserted.length + result.skipped.length} registros: '
+            '${result.skipped.map((s) => 'fila ${s.index} (${s.reason})').join('; ')}');
 }
